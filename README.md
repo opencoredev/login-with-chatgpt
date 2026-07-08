@@ -36,6 +36,16 @@ npm and pnpm work too. Everything ships as ESM with types for Node 18+.
 
 Start with the [quickstart](./docs/content/docs/quickstart.mdx). The [security model](./docs/content/docs/concepts/security.mdx) explains how tokens stay on your server, and the [production checklist](./docs/content/docs/guides/production.mdx) is there for when you deploy.
 
+## Agent skill
+
+Using Claude Code, Cursor, or Codex? Install the [agent skill](./skills/login-with-chatgpt/SKILL.md) so your agent wires the SDK correctly — no invented API keys, no hardcoded model slugs:
+
+```bash
+npx skills add opencoredev/login-with-chatgpt
+```
+
+Then just ask your agent to "add Login with ChatGPT" and it will mount the handler, render the button, and stream through the proxy the right way. Also on [skills.sh](https://skills.sh/opencoredev/login-with-chatgpt).
+
 ## Star history
 
 <p align="center">
