@@ -459,6 +459,22 @@ describe("createChatGPTHandler", () => {
     );
     expect(sameOrigin.status).toBe(200);
 
+    // Matching host with a different scheme is still cross-origin.
+    const differentScheme = await handler.handler(
+      new Request(`${BASE}/login`, { method: "POST", headers: { origin: "http://app.dev" } }),
+    );
+    expect(differentScheme.status).toBe(403);
+
+    // TLS-terminating proxies may expose an internal http URL but forward the
+    // public scheme separately.
+    const forwardedHttps = await handler.handler(
+      new Request(`http://app.dev/api/chatgpt/login`, {
+        method: "POST",
+        headers: { origin: "https://app.dev", "x-forwarded-proto": "https" },
+      }),
+    );
+    expect(forwardedHttps.status).toBe(200);
+
     // Allowlisted cross-origin POST passes.
     const allowlisted = await handler.handler(
       new Request(`${BASE}/login`, { method: "POST", headers: { origin: "https://trusted.example" } }),

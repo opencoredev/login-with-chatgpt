@@ -256,7 +256,7 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
     } catch {
       return originNotAllowed(origin); // includes the opaque "null" origin
     }
-    if (parsed.host === new URL(request.url).host) return undefined;
+    if (parsed.origin === getRequestOrigin(request)) return undefined;
     if (allowedOrigins.has(parsed.origin)) return undefined;
     return originNotAllowed(parsed.origin);
   }
@@ -647,9 +647,18 @@ function originNotAllowed(origin: string): Response {
 
 /** `true` when the client connection is HTTPS, including behind a TLS-terminating proxy. */
 function isSecureRequest(request: Request): boolean {
-  const forwardedProto = request.headers.get("x-forwarded-proto");
-  if (forwardedProto) return forwardedProto.split(",")[0]?.trim() === "https";
-  return new URL(request.url).protocol === "https:";
+  return (forwardedProtocol(request) ?? new URL(request.url).protocol) === "https:";
+}
+
+function getRequestOrigin(request: Request): string {
+  const url = new URL(request.url);
+  return `${forwardedProtocol(request) ?? url.protocol}//${url.host}`;
+}
+
+function forwardedProtocol(request: Request): "http:" | "https:" | undefined {
+  const value = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
+  if (value === "http" || value === "https") return `${value}:`;
+  return undefined;
 }
 
 function json(data: unknown, init: { status?: number; headers?: Headers } = {}): Response {
