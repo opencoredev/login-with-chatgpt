@@ -39,5 +39,17 @@
   "sideEffects": false,
   "engines": {
     "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opencoredev/login-with-chatgpt.git",
+    "directory": "packages/server"
+  },
+  "homepage": "https://github.com/opencoredev/login-with-chatgpt#readme",
+  "bugs": {
+    "url": "https://github.com/opencoredev/login-with-chatgpt/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
