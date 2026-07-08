@@ -14,14 +14,10 @@
     "docs": "PORT=${PORT:-3001} bun run --cwd docs dev",
     "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo",
     "build": "tsc -p packages/core/tsconfig.build.json && tsc -p packages/server/tsconfig.build.json && tsc -p packages/react/tsconfig.build.json && tsc -p packages/ai/tsconfig.build.json",
-    "changeset": "changeset",
-    "version-packages": "changeset version",
-    "release:ci": "bun run typecheck && bun test packages && bun run build",
-    "release": "bun run build && changeset publish"
+    "release": "bun run build && (cd packages/core && bun publish) && (cd packages/server && bun publish) && (cd packages/react && bun publish) && (cd packages/ai && bun publish)"
   },
   "devDependencies": {
     "@ai-sdk/openai": "^4",
-    "@changesets/cli": "^2.31.0",
     "@types/bun": "latest",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
