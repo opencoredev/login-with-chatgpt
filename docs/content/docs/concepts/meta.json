@@ -1,0 +1,5 @@
+{
+  "title": "Concepts",
+  "icon": "Layers",
+  "pages": ["how-it-works", "sessions", "response-proxy", "models", "security"]
+}

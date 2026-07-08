@@ -1,0 +1,12 @@
+{
+  "title": "Docs",
+  "pages": [
+    "---Get Started---",
+    "index",
+    "quickstart",
+    "ai",
+    "concepts",
+    "guides",
+    "reference"
+  ]
+}

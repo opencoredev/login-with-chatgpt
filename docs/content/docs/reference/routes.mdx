@@ -1,0 +1,114 @@
+---
+title: HTTP routes
+description: Every route the handler serves, with request/response shapes, status codes, and CSRF rules.
+---
+
+All paths are relative to `basePath` (default `/api/chatgpt`). Responses are
+JSON unless noted. Unknown paths return a plain-text `404`; a known path with
+the wrong method returns `405` with an `Allow` header.
+
+## `POST /login`
+
+Starts a device login, or reuses the session's still-valid pending device code
+without calling upstream again. Sets the session cookie when none exists.
+
+```json title="200"
+{
+  "status": "pending",
+  "userCode": "7B0J-DPK78",
+  "verificationUrl": "https://auth.openai.com/codex/device",
+  "interval": 5,
+  "expiresAt": 1780000000000
+}
+```
+
+## `GET /status`
+
+Advances the login by at most one upstream poll (respecting `interval`), then
+returns public state. While pending it returns the device fields above; token
+refresh also happens here for authenticated sessions near expiry.
+
+```json title="200"
+{
+  "status": "authenticated",
+  "user": { "accountId": "acct_…", "email": "user@example.com", "plan": "pro" }
+}
+```
+
+`status` is one of `unauthenticated`, `pending`, `authenticated`, `expired`,
+`error`.
+
+## `GET /session`
+
+Same response shape as `/status`, but never polls upstream, so it is a cheap read for
+initial page loads.
+
+## `POST /logout`
+
+Deletes the session from the store and clears the cookie (`Max-Age=0`).
+
+```json title="200"
+{ "status": "unauthenticated" }
+```
+
+## `GET /models`
+
+Requires an authenticated session; refreshes tokens, then lists the account's
+model slugs. Disabled when `enableResponsesProxy: false`.
+
+```json title="200"
+{ "models": ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"] }
+```
+
+| Status | Body |
+| --- | --- |
+| `401` | `{ "error": "not_authenticated" }` |
+| upstream status or `502` | `{ "models": [], "error": "<code>", "message": "…" }` |
+
+## `POST /responses`
+
+The streaming proxy. Accepts a Responses-API JSON body, injects credentials,
+normalizes it for the Codex backend, and streams the upstream body back with
+`cache-control: no-store`. Disabled when `enableResponsesProxy: false`.
+
+Request headers the proxy understands
+(details in [Fast tier & thinking effort](/docs/guides/fast-and-reasoning)):
+
+| Header | Accepted values |
+| --- | --- |
+| `x-login-with-chatgpt-service-tier` | `auto`, `default`, `flex`, `priority`, `fast` |
+| `x-login-with-chatgpt-reasoning-effort` | `none`, `low`, `medium`, `high`, `xhigh` |
+
+| Status | Body / behavior |
+| --- | --- |
+| `200` | Upstream stream, content type forwarded from upstream. |
+| `400` | `{ "error": "invalid_responses_request", "message": "…" }`, `invalid_service_tier`, or `invalid_reasoning_effort`. |
+| `401` | `{ "error": "not_authenticated" }` when there is no live session. |
+| `403` | `{ "error": "model_not_allowed", "model": "…" }` or `{ "error": "origin_not_allowed", … }`. |
+| `413` | `{ "error": "responses_request_too_large", "maxRequestBytes": … }`. |
+| `429` | `{ "error": "rate_limited", "retryAfterSeconds": … }` plus a `retry-after` header. |
+| upstream status | `{ "error": "responses_request_failed", "status": …, "detail": "…" }`. The handler also logs the upstream status and body snippet. |
+
+When a `fast` service tier is rejected upstream, the handler retries once
+without it and adds `x-login-with-chatgpt-service-tier-fallback: auto` to the
+response.
+
+## CSRF rules
+
+All non-GET routes (`/login`, `/logout`, `/responses`) check the `Origin`
+header on browser requests:
+
+- Same-origin requests and origins listed in `allowedOrigins` pass.
+- Other origins get `403 { "error": "origin_not_allowed" }`.
+- Requests without an `Origin` header (curl, server-to-server) always pass;
+  they cannot carry a browser's ambient cookie.
+
+## Cookie
+
+One cookie, `lwc_session` by default: an HMAC-signed random id, `HttpOnly`,
+`SameSite=Lax`, `Path=/`, `Max-Age` from `sessionTtlMs`, and `Secure` when the
+request is HTTPS (directly or via `X-Forwarded-Proto`). Attributes are
+configurable via the [`cookie` option](server.mdx#server-options).
+
+All error shapes, including the ones thrown as exceptions rather than
+returned as JSON, are collected in [Error codes](errors.mdx).

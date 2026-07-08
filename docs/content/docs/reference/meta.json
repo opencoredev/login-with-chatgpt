@@ -1,0 +1,13 @@
+{
+  "title": "Reference",
+  "icon": "FileCode",
+  "pages": [
+    "server",
+    "routes",
+    "react",
+    "ai",
+    "core",
+    "errors",
+    "troubleshooting"
+  ]
+}

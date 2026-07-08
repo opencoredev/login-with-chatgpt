@@ -1,0 +1,100 @@
+---
+title: Security model
+description: What a signed-in app can and cannot do, which guardrails ship by default, and where your obligations start.
+---
+
+Login with ChatGPT stores refreshable credentials for a ChatGPT account and
+can spend that user's plan. Treat the handler as billing-adjacent
+infrastructure, not a harmless social login button.
+
+## The threat model, honestly
+
+This SDK is open source and runs on the app developer's own server. There is
+no hosted service in the middle. That means the SDK's guardrails protect
+users from buggy or careless integrations, not from a malicious developer,
+who controls the server and can change the code. Three things actually bound
+the damage:
+
+**The token's scope is fixed by OpenAI, not by this SDK.** The OAuth session
+belongs to the public Codex client and only works against the ChatGPT-backed
+Codex endpoints: model listing and AI requests. It cannot sign in to
+chatgpt.com as the user, read their conversations, change their email or
+password, or call the platform API. The worst a malicious app can do is spend
+the user's plan and read the profile fields in the id token (email, name,
+plan).
+
+**The user's consent is the real gate.** The default widget shows a
+usage-risk warning before login, always. It can be customized but not
+disabled.
+
+**Sessions are revocable.** Signing out deletes the app's stored session, and
+the app keeps nothing that works afterward.
+
+## User consent
+
+The default `<LoginWithChatGPT />` widget shows a consent step before
+anything touches OpenAI: a popup, or inline when the popup is blocked. It
+tells users that requests bill to their own ChatGPT plan, that prompts and
+attachments pass through your server, that the app never sees their password
+and cannot sign in to ChatGPT as them, and that signing out deletes the
+stored session.
+
+If you build a custom UI with `useLoginWithChatGPT()` or a `children`
+renderer, that obligation moves to you. Render equivalent consent before
+calling `login()`. Keep the copy short and specific. "I trust this app,
+continue" is better than a vague "Connect".
+
+## Default guardrails
+
+On without any configuration:
+
+- The refresh token never leaves the session layer. `auth.getTokens(request)`
+  returns only the short-lived access token unless you pass
+  `{ includeRefreshToken: true }`.
+- The `/responses` proxy rate limits each session at 30 requests/minute, so
+  runaway client code cannot quietly burn a user's plan.
+- Cookie-authenticated non-GET routes reject cross-origin browser requests
+  unless the origin is in `allowedOrigins`. Third-party sites cannot ride the
+  session cookie, even with `SameSite=None`.
+- Tokens are AES-GCM encrypted at rest when `secret` is set.
+- Sessions that never authenticate expire from the store in ~30 minutes, so
+  unauthenticated `POST /login` calls cannot pile up long-lived entries.
+
+## Your guardrails
+
+The flow has no narrow scopes. There is no "read-only", "one request", or
+"max spend" grant, so once authorized, your server can proxy requests until
+the session expires or is deleted. Layer product-level limits on top:
+
+- Restrict models with `responsesProxy.allowedModels`, and tighten
+  `responsesProxy.rateLimit` with a shared store across instances.
+- Cap prompt length, output length, and attachment size at your app boundary.
+- Keep `/responses` the only spend path. Do not expose a generic OpenAI
+  proxy.
+- Use a short `sessionTtlMs` for risky or public apps.
+- Add an emergency kill switch in front of the proxy route.
+- Log request metadata for abuse review, not prompts or file contents.
+- Rate limit `/login` and `/status` at the edge (WAF, CDN, or gateway). They
+  are unauthenticated by design — no session exists yet — so the handler
+  cannot see a trustworthy client IP to limit them itself. Without an edge
+  limit, a script can drive repeated upstream device-code requests against
+  your OpenAI client.
+
+## Sign-out and cleanup
+
+Give users a visible sign-out that calls the logout route. It deletes the
+stored session server-side, and it is the most reliable way to remove this
+app's credentials: OpenAI's active-sessions UI does not necessarily list
+third-party or device-code sessions. For users who want to review their
+account anyway, link:
+
+- [ChatGPT security settings](https://chatgpt.com/#settings/Security)
+- [Managing active sessions in ChatGPT](https://help.openai.com/en/articles/20001257-managing-active-sessions-in-chatgpt)
+
+## Compatibility caveat
+
+This SDK does not use the versioned OpenAI Platform API. Endpoint paths can
+move, `clientVersion` goes stale, model slugs differ by account, and OpenAI
+policy can change independently of this package. Keep
+[model discovery](models.mdx) in your app, smoke-test the flow after every
+deploy, and review OpenAI terms for your use case.

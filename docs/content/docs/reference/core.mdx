@@ -1,0 +1,109 @@
+---
+title: Core primitives
+description: ChatGPTConfig, exported defaults, and the device-flow, token, and transport primitives in @loginwithchatgpt/core.
+---
+
+`@loginwithchatgpt/core` contains the primitives the other packages are built
+on. Reach for it when building [headless logins](/docs/guides/headless), custom
+handlers, or tests. Typical apps never import it directly.
+
+It has no dependencies and runs anywhere with Web-standard `fetch` and
+`crypto`.
+
+## `ChatGPTConfig`
+
+Every package accepts these fields and resolves them with `resolveConfig()`:
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `clientId` | the public Codex client id | Override only if you control a compatible client. |
+| `issuer` | `"https://auth.openai.com"` | Derives the OAuth, device-code, and token URLs. |
+| `scope` | `"openid profile email offline_access"` | `offline_access` is required for refresh tokens. |
+| `codexBaseUrl` | `"https://chatgpt.com/backend-api/codex"` | Base URL for models and responses. |
+| `originator` | `"codex_cli_rs"` | Sent as a header to upstream endpoints. |
+| `clientVersion` | `"0.142.5"` | Gates model availability; see [client version drift](/docs/concepts/models#client-version-drift). |
+| `fetch` | global `fetch` | Inject for testing, proxying, or exotic runtimes. |
+
+The concrete defaults are exported as constants (`DEFAULT_CLIENT_ID`,
+`DEFAULT_ISSUER`, `DEFAULT_SCOPE`, `DEFAULT_CODEX_BASE_URL`,
+`DEFAULT_ORIGINATOR`, `DEFAULT_CLIENT_VERSION`, `DEFAULT_MODEL`). Treat them
+as operational defaults, not guarantees. The upstream endpoints can change
+independently of this package.
+
+## Device flow
+
+```ts
+import {
+  requestDeviceCode,
+  pollDeviceCode,
+  exchangeDeviceAuthorization,
+  waitForDeviceTokens,
+  resolveConfig,
+} from "@loginwithchatgpt/core";
+
+const config = resolveConfig();
+const device = await requestDeviceCode(config);
+// { deviceAuthId, userCode, verificationUrl, interval, expiresAt }
+```
+
+- `pollDeviceCode(config, device)` runs one poll and returns
+  `{ status: "pending" }` or `{ status: "authorized", … }`.
+- `exchangeDeviceAuthorization(config, poll)` trades an authorized poll
+  result for `ChatGPTTokens`.
+- `waitForDeviceTokens(config, device, options?)` is the loop in one call, with
+  `signal`, `onPoll`, and `intervalMs` options.
+
+Device codes live for 15 minutes (`DEVICE_CODE_TTL_MS`).
+
+## Tokens
+
+```ts
+interface ChatGPTTokens {
+  accessToken: string;
+  refreshToken?: string;
+  idToken?: string;
+  accountId?: string; // chatgpt_account_id claim
+  expiresAt?: number; // epoch ms
+}
+```
+
+- `refreshTokens(config, refreshToken)` performs one refresh and throws
+  `refresh_token_invalid` when the token is dead.
+- `ensureFreshTokens(config, tokens, { onRefresh?, force? })` refreshes only
+  when needed (60-second early margin), with a persistence callback.
+- `isAccessTokenExpired(tokens)` is the same margin check, standalone.
+- `isRefreshTokenInvalid(error)` is the type guard for the dead-refresh-token case.
+
+## JWT and PKCE helpers
+
+- `parseUser(idToken)` builds `ChatGPTUser` (`accountId`, `email`, `name`,
+  `plan`) from id-token claims.
+- `decodeJwt(token)`, `getTokenExpiry(token)`, and `deriveAccountId(token)`
+  decode payloads without verifying signatures, so treat their output as
+  claims, not proof.
+- `generatePkce()`, `createState()`, and `randomToken(length?)` support the
+  loopback redirect flow (`createAuthorizationUrl()` plus
+  `exchangeAuthorizationCode()`), which exists alongside the device flow for
+  environments that can listen on localhost.
+
+## Codex transport
+
+This layer makes AI SDK traffic acceptable to the ChatGPT-backed backend:
+
+- `createCodexFetch({ config, getAuth, ...CodexResponsesOptions })` returns a
+  fetch-compatible function that rewrites URLs onto `codexBaseUrl`, injects
+  the bearer token and `chatgpt-account-id` header, adds `client_version`,
+  and normalizes `/responses` bodies.
+- `normalizeResponsesBody(body, options?)` is the body rewrite by itself
+  ([rules](/docs/concepts/response-proxy#request-normalization)).
+- `listCodexModels({ config, getAuth })` and `extractCodexModelSlugs(value)`
+  handle model listing and tolerant slug extraction.
+
+## Store
+
+`KeyValueStore<T>` and `MemoryStore<T>` are the
+[session-store contract](/docs/concepts/sessions#the-session-store) used by
+the server package, exported here so custom stores need no extra dependency.
+
+Everything these functions can throw is listed in
+[Error codes](errors.mdx).

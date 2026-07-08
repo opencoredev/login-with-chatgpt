@@ -1,0 +1,79 @@
+---
+title: Error codes
+description: Every ChatGPTAuthError code, the HTTP error shapes, and ChatGPTProxyError.
+---
+
+The SDK throws one error class from core and server code, and one from the
+browser proxy provider. HTTP routes return structured JSON errors.
+
+## `ChatGPTAuthError`
+
+```ts
+import { ChatGPTAuthError, isRefreshTokenInvalid } from "@loginwithchatgpt/core";
+
+try {
+  await auth.getModels(request);
+} catch (error) {
+  if (error instanceof ChatGPTAuthError) {
+    error.code;   // machine-readable code below
+    error.status; // upstream HTTP status, when there was one
+    error.body;   // upstream body snippet, when there was one
+  }
+}
+```
+
+| Code | Thrown when |
+| --- | --- |
+| `device_code_request_failed` | Upstream refused to issue a device code. |
+| `device_code_disabled` | The device-code endpoint returned 404, so the flow is unavailable for this issuer/client. |
+| `authorization_pending` | Polling continued past what the caller allowed. |
+| `authorization_expired` | The 15-minute device code ran out, or `waitForDeviceTokens()` was aborted. |
+| `token_exchange_failed` | Exchanging the authorization code for tokens failed. |
+| `token_refresh_failed` | A refresh failed for a reason other than a dead token (network blip, 5xx). Usually retryable. |
+| `refresh_token_invalid` | OpenAI reported the refresh token as expired, reused, or invalidated. The session is dead. The handler deletes it and reports `expired`. Detect with `isRefreshTokenInvalid(error)`. |
+| `not_authenticated` | An operation needed tokens and none exist. |
+| `invalid_token` | Tokens lack a usable `accountId`. |
+| `network_error` | The upstream request itself failed (DNS, timeout, offline). |
+| `models_request_failed` | `GET /models` upstream call failed. |
+| `responses_request_failed` | The proxied `/responses` upstream call failed. |
+
+## HTTP error shapes
+
+Returned by the [handler routes](routes.mdx):
+
+| Status | Body | Route(s) |
+| --- | --- | --- |
+| `400` | `{ "error": "invalid_responses_request", "message": "…" }` | `/responses` |
+| `400` | `{ "error": "invalid_service_tier", "serviceTier": "…" }` or `{ "error": "invalid_reasoning_effort", "reasoningEffort": "…" }` | `/responses` |
+| `401` | `{ "error": "not_authenticated" }` | `/models`, `/responses` |
+| `403` | `{ "error": "model_not_allowed", "model": "…" }` | `/responses` |
+| `403` | `{ "error": "origin_not_allowed", "origin": "…" }` | all non-GET routes |
+| `404` / `405` | plain text, `405` includes an `Allow` header | unknown path / wrong method |
+| `413` | `{ "error": "responses_request_too_large", "maxRequestBytes": … }` | `/responses` |
+| `429` | `{ "error": "rate_limited", "retryAfterSeconds": … }` with a `retry-after` header | `/responses` |
+| upstream status | `{ "error": "responses_request_failed", "status": …, "detail": "…" }` | `/responses` |
+| upstream status or `502` | `{ "models": [], "error": "<code>", "message": "…" }` | `/models` |
+
+## `ChatGPTProxyError`
+
+Thrown by the browser proxy provider's `listModels()` when your handler
+answers non-OK:
+
+```ts
+import { ChatGPTProxyError } from "@loginwithchatgpt/ai";
+
+try {
+  await chatgpt.listModels();
+} catch (error) {
+  if (error instanceof ChatGPTProxyError && error.status === 401) {
+    // signed out — show the login button
+  }
+}
+```
+
+Streaming errors from `/responses` surface through the AI SDK's own error
+types instead (see
+[Troubleshooting](troubleshooting.mdx#ai-sdk-throws-ai_nooutputgeneratederror)).
+
+[Troubleshooting](troubleshooting.mdx) covers the same failures organized by
+symptom instead of by code.

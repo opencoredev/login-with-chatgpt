@@ -1,0 +1,121 @@
+---
+title: AI SDK providers
+description: createChatGPTProxyProvider for the browser, createChatGPT for the server, and the shared provider API.
+---
+
+`@loginwithchatgpt/ai` adapts the ChatGPT-backed Codex responses endpoint to
+the Vercel AI SDK (`ai` and `@ai-sdk/openai` are peer dependencies). Two
+factories, one provider shape:
+
+- **Proxy provider**: browser-safe. Sends requests to your server handler,
+  which injects credentials from the session cookie.
+- **Direct provider**: server-only. Holds a user's tokens and calls upstream
+  directly.
+
+## Provider API
+
+Both factories return a `ChatGPTProvider`:
+
+```ts
+const model = chatgpt("gpt-5.5");            // a responses model
+const same = chatgpt.responses("gpt-5.5");   // explicit accessor
+const model2 = chatgpt();                    // uses defaultModel ("gpt-5.5")
+const slugs = await chatgpt.listModels();    // string[]
+const openai = chatgpt.openai;               // underlying @ai-sdk/openai provider
+```
+
+Models work with `streamText`, `generateText`, tool calling, and structured
+output, plus anything else the AI SDK responses model supports. For embeddings, images,
+audio, or stable OpenAI Platform semantics, use the official provider with
+your own API key instead.
+
+## `createChatGPTProxyProvider(options?)`
+
+```ts title="browser"
+import { createChatGPTProxyProvider } from "@loginwithchatgpt/ai";
+import { streamText } from "ai";
+
+const chatgpt = createChatGPTProxyProvider();
+
+const result = streamText({
+  model: chatgpt("gpt-5.5"),
+  prompt: "Explain cache invalidation in two sentences.",
+});
+```
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `basePath` | `string` | `"/api/chatgpt"` | Handler mount path. Use an absolute URL for cross-origin setups. |
+| `fetch` | `FetchLike` | global `fetch` | Wraps the AI SDK's own requests to `/responses`. |
+| `credentials` | `RequestCredentials` | `"same-origin"` | Used by `listModels()`. |
+| `headers` | `Record<string, string>` | — | Extra headers on every request. |
+| `defaultModel` | `string` | `"gpt-5.5"` | Used by `chatgpt()` with no argument. |
+
+`listModels()` throws a `ChatGPTProxyError` (with a `status` field) on non-OK
+responses. Check `status === 401` to detect a signed-out user. Cross-origin
+setups need both `credentials` and a `fetch` wrapper; see the
+[cross-origin guide](/docs/guides/cross-origin).
+
+## `createChatGPT(options)`
+
+```ts title="server"
+import { createChatGPT } from "@loginwithchatgpt/ai";
+import { streamText } from "ai";
+
+const tokens = await auth.getTokens(request);
+if (!tokens) return new Response("Unauthorized", { status: 401 });
+
+const chatgpt = createChatGPT({ credentials: tokens });
+const result = streamText({ model: chatgpt(), prompt });
+return result.toUIMessageStreamResponse();
+```
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `credentials` | `ChatGPTTokens \| () => ChatGPTTokens \| Promise<ChatGPTTokens>` | required | Static tokens or a loader. |
+| `onRefresh` | `(tokens: ChatGPTTokens) => void \| Promise<void>` | — | Persist rotated tokens when you manage them yourself. |
+| `headers` | `Record<string, string>` | — | Extra headers on upstream requests. |
+| `defaultModel` | `string` | `"gpt-5.5"` | Used by `chatgpt()` with no argument. |
+| + `CodexResponsesOptions` | — | — | `instructions`, `reasoningEffort`, `reasoningSummary`, `textVerbosity`, `serviceTier`; see [server defaults](server.mdx#codex-request-defaults). |
+| + `ChatGPTConfig` | — | — | Upstream overrides; see [core reference](core.mdx#chatgptconfig). |
+
+### Refresh behavior
+
+- Tokens with a `refreshToken` refresh in place. Pass `onRefresh` to persist
+  rotations (see [Headless & CLI logins](/docs/guides/headless)).
+- Tokens without a `refreshToken`, which is the shape `auth.getTokens()`
+  returns, cannot self-refresh. If `credentials` is a function, the provider
+  calls it again when the access token expires, so pass a loader for
+  long-lived providers. Request-scoped providers need nothing.
+- Tokens without an `accountId` throw `ChatGPTAuthError` with code
+  `invalid_token`.
+
+## What the transport does
+
+Both providers route through `createCodexFetch()` from core, which adds auth
+headers and the `client_version` query parameter, then rewrites the body for
+the stateless Codex backend. The full rule list is in
+[Response proxy](/docs/concepts/response-proxy#request-normalization).
+
+## Attachments
+
+Send files through the standard AI SDK `messages` shape; the transport passes
+them through untouched:
+
+```ts
+const result = streamText({
+  model: chatgpt(model),
+  messages: [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: "Summarize this file." },
+        { type: "file", data: dataUrl, mediaType: "application/pdf", filename: "report.pdf" },
+      ],
+    },
+  ],
+});
+```
+
+The proxy's `maxRequestBytes` (8 MiB default) counts the full JSON body,
+including base64 file data.

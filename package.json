@@ -1,0 +1,26 @@
+{
+  "name": "login-with-chatgpt-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "scripts": {
+    "dev": "PORT=${PORT:-3001} bun run --cwd docs dev",
+    "typecheck": "tsc --build --pretty",
+    "test": "bun test packages",
+    "demo": "bun --cwd examples/demo run dev",
+    "docs": "PORT=${PORT:-3001} bun run --cwd docs dev",
+    "clean": "rm -rf packages/*/dist packages/*/*.tsbuildinfo",
+    "build": "tsc -p packages/core/tsconfig.build.json && tsc -p packages/server/tsconfig.build.json && tsc -p packages/react/tsconfig.build.json && tsc -p packages/ai/tsconfig.build.json"
+  },
+  "devDependencies": {
+    "@ai-sdk/openai": "^4",
+    "@types/bun": "latest",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "ai": "^7",
+    "typescript": "^5.6.0"
+  }
+}

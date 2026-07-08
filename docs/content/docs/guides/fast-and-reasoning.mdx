@@ -1,0 +1,83 @@
+---
+title: Fast tier & thinking effort
+description: Offer Codex Fast mode and a reasoning-effort control through validated request headers.
+---
+
+Two request settings are worth exposing in a chat UI: the Codex service tier
+(Fast mode) and the reasoning effort, usually shown as a "thinking level".
+Browser code cannot rewrite proxied bodies, so the SDK exposes both as narrow
+headers. The server validates each value and writes it into the request.
+
+## Fast tier from the browser
+
+Codex Fast mode is `service_tier: "fast"` on supported models. Send the SDK
+header on any AI SDK call:
+
+```ts
+import { streamText } from "ai";
+
+const result = streamText({
+  model: chatgpt("gpt-5.5"),
+  prompt: "Refactor this helper.",
+  headers: {
+    "x-login-with-chatgpt-service-tier": "fast",
+  },
+});
+```
+
+Accepted values are `auto`, `default`, `flex`, `priority`, and `fast`.
+Anything else returns `400`. If upstream rejects Fast for that session or
+model, the handler retries once without `service_tier`. The request still
+streams, and the response carries
+`x-login-with-chatgpt-service-tier-fallback: auto` so your UI can show that
+Fast did not apply.
+
+Fast is account- and model-dependent. Show the toggle only for models that
+support it, and tell users it consumes their included usage faster:
+
+```ts
+const supportsFast = model === "gpt-5.5" || model === "gpt-5.4";
+```
+
+## Thinking effort from the browser
+
+The reasoning header works the same way and lands in `reasoning.effort`:
+
+```ts
+const result = streamText({
+  model: chatgpt("gpt-5.5"),
+  prompt: "Review this migration plan.",
+  headers: {
+    "x-login-with-chatgpt-reasoning-effort": "high",
+  },
+});
+```
+
+Accepted values are `none`, `low`, `medium`, `high`, and `xhigh`. Invalid
+values return `400`. When nothing is sent, the default is `medium`. For a
+user-facing control, stick to `low` / `medium` / `high`; the outer values are
+model-dependent and worth testing before you offer them.
+
+## Defaults on the server
+
+Both settings can also be fixed server-side instead of per request, on the
+handler for proxied traffic or on the direct provider for server-side calls:
+
+```ts title="server.ts"
+const auth = createChatGPTHandler({
+  secret: process.env.LWC_SECRET,
+  reasoningEffort: "high",   // default for proxied requests
+  serviceTier: "fast",       // applied when the body has no service_tier
+});
+```
+
+```ts title="server-side provider"
+const chatgpt = createChatGPT({
+  credentials: tokens,
+  serviceTier: "fast",
+  reasoningEffort: "high",
+});
+```
+
+Header values from the browser win over these defaults, because the header is
+written into the body before normalization fills the gaps.

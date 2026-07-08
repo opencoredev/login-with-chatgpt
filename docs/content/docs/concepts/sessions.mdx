@@ -1,0 +1,97 @@
+---
+title: Sessions & tokens
+description: The session cookie, the session store, token encryption, and refresh mechanics.
+---
+
+A session is one browser's relationship with one ChatGPT account. The browser
+holds a signed cookie. Your server holds everything else.
+
+## The session cookie
+
+The handler sets one cookie, `lwc_session`, containing a random 24-character
+id signed with HMAC-SHA256 using your `secret`. It carries no data. It is only
+a key into the session store.
+
+| Attribute | Default |
+| --- | --- |
+| `HttpOnly` | `true` |
+| `SameSite` | `Lax` |
+| `Secure` | `true` when the request is HTTPS |
+| `Path` | `/` |
+| `Max-Age` | derived from `sessionTtlMs` (30 days) |
+
+Override any attribute with the `cookie` option on `createChatGPTHandler()`.
+
+<Callout type="warn" title="Secure is inferred per request">
+  The handler sets `Secure` when the request URL is `https:` or when
+  `X-Forwarded-Proto` starts with `https`. If your reverse proxy terminates
+  TLS without forwarding that header, cookies go out without `Secure`. Fix the
+  proxy, or force it with `cookie: { secure: true }`.
+</Callout>
+
+## The session store
+
+Sessions live in a `KeyValueStore`. The default is an in-process
+`MemoryStore`, which is fine for local development and wrong for production:
+it loses sessions on restart and cannot be shared across instances or
+serverless invocations.
+
+```ts title="server.ts"
+import { createChatGPTHandler } from "@loginwithchatgpt/server";
+
+const auth = createChatGPTHandler({
+  secret: process.env.LWC_SECRET,
+  sessionStore: redisBackedStore, // any KeyValueStore implementation
+});
+```
+
+The interface is small, so wrapping Redis, a database table, or `Bun.redis`
+takes a few lines:
+
+```ts
+interface KeyValueStore<T> {
+  get(key: string): Promise<T | undefined> | T | undefined;
+  set(key: string, value: T, options?: { ttlMs?: number }): Promise<void> | void;
+  delete(key: string): Promise<void> | void;
+}
+```
+
+## Token encryption
+
+When `secret` is set, tokens are AES-GCM encrypted before entering the store,
+with a key derived via SHA-256 and a random IV per write. The store never
+sees plaintext tokens. Still treat it as sensitive: restrict access, avoid
+logging session objects, and delete sessions on logout.
+
+Rotating the secret invalidates all existing session cookies and makes stored
+token payloads undecryptable. Users just sign in again, but plan the
+rotation rather than improvising it.
+
+## Refresh mechanics
+
+Access tokens are short-lived. The refresh token can mint new ones until the
+session dies. The handler refreshes automatically:
+
+- A token counts as expired 60 seconds before its actual expiry, so proxied
+  requests never race the deadline.
+- Concurrent requests that need a refresh share one in-flight refresh per
+  session (per instance). A rotated refresh token is never invalidated by a
+  double refresh.
+- When OpenAI reports the refresh token as dead (`refresh_token_expired`,
+  `refresh_token_reused`, `refresh_token_invalidated`, or `invalid_grant`),
+  the handler deletes the session and reports `expired`. Show the login
+  button again.
+
+## What app code gets
+
+`auth.getTokens(request)` returns a fresh access token plus account id, with
+the refresh token redacted. Refresh happens inside the session layer, so
+request-scoped code never needs it:
+
+```ts
+const tokens = await auth.getTokens(request);
+// { accessToken, accountId, expiresAt } — no refreshToken
+
+const exported = await auth.getTokens(request, { includeRefreshToken: true });
+// Only for exporting a session, e.g. a store migration. Never log or forward this.
+```

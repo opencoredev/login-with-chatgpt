@@ -1,0 +1,134 @@
+---
+title: Server handler
+description: createChatGPTHandler() options, defaults, and the getSession / getTokens / getModels helpers.
+---
+
+```ts
+import { createChatGPTHandler } from "@loginwithchatgpt/server";
+
+const auth = createChatGPTHandler(options);
+```
+
+Returns a `ChatGPTHandler`:
+
+```ts
+interface ChatGPTHandler {
+  basePath: string;
+  handler: (request: Request) => Promise<Response>;
+  fetch: (request: Request) => Promise<Response>; // alias of handler
+  getSession: (request: Request) => Promise<PublicSession>;
+  getTokens: (request: Request, options?: { includeRefreshToken?: boolean }) => Promise<ChatGPTTokens | undefined>;
+  getModels: (request: Request) => Promise<string[] | undefined>;
+}
+```
+
+Mount `handler` at `${basePath}/*`. It only requires Web-standard `Request`,
+`Response`, `fetch`, and `crypto`, so Bun, Node 18+, and edge runtimes all
+work. The routes it serves are documented in [HTTP routes](routes.mdx).
+
+## Options
+
+### Server options
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `basePath` | `string` | `"/api/chatgpt"` | Mount path; leading `/` added, trailing `/` stripped. |
+| `secret` | `string` | ephemeral random | Signs cookies (HMAC-SHA256) and encrypts tokens (AES-GCM). Logs a warning when omitted. Always set it outside local dev. |
+| `sessionStore` | `KeyValueStore<StoredSession>` | `new MemoryStore()` | Use a shared store in production. |
+| `cookieName` | `string` | `"lwc_session"` | Session cookie name. |
+| `cookie` | `Partial<CookieOptions>` | `{}` | Overrides: `path`, `domain`, `maxAge`, `secure`, `httpOnly`, `sameSite`. |
+| `sessionTtlMs` | `number` | `2_592_000_000` (30 days) | Session and cookie lifetime. |
+| `defaultModel` | `string` | `"gpt-5.5"` | Injected when a `/responses` body omits `model`. |
+| `enableResponsesProxy` | `boolean` | `true` | `false` disables the `/responses` **and** `/models` routes. |
+| `responsesProxy` | `ResponsesProxyPolicy` | `{}` | Guardrails below. |
+| `allowedOrigins` | `readonly string[]` | `[]` | Extra origins allowed on cookie-authenticated non-GET routes. |
+
+### `responsesProxy`
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `allowedModels` | `readonly string[] \| (model: string) => boolean` | all allowed | Disallowed models get `403 model_not_allowed`. |
+| `maxRequestBytes` | `number` | `8_388_608` (8 MiB) | Maximum raw JSON body size. |
+| `rateLimit` | `false \| { limit?, windowMs?, store? }` | `{ limit: 30, windowMs: 60_000 }` | Per-session limit; `false` disables. Default store is per-instance memory; pass a shared `store` across instances. |
+
+### Codex request defaults
+
+Applied to proxied `/responses` bodies when the request does not set them
+(see [request normalization](/docs/concepts/response-proxy#request-normalization)):
+
+| Option | Type | Effective default | Notes |
+| --- | --- | --- | --- |
+| `instructions` | `string` | a generic assistant prompt | Sent when the body has no `instructions`. |
+| `reasoningEffort` | `"none" \| "low" \| "medium" \| "high" \| "xhigh"` | `"medium"` | Overridden per request by the [reasoning header](/docs/guides/fast-and-reasoning). |
+| `reasoningSummary` | `string` | `"auto"` | Merged into `reasoning`. |
+| `textVerbosity` | `"low" \| "medium" \| "high"` | `"medium"` | Merged into `text`. |
+| `serviceTier` | `"auto" \| "default" \| "flex" \| "priority" \| "fast"` | unset | Applied when the body has no `service_tier`. |
+
+### Upstream configuration
+
+Inherited from `ChatGPTConfig`. Override only when you know why
+([core reference](core.mdx#chatgptconfig)): `clientId`, `issuer`, `scope`,
+`codexBaseUrl`, `originator`, `clientVersion`, `fetch`.
+
+## Helpers
+
+All three read the session cookie from the request and are safe in any server
+context (route handlers, server components, middleware).
+
+### `getSession(request)`
+
+Returns public state without touching upstream:
+
+```ts
+const session = await auth.getSession(request);
+// { status: "authenticated", user: { accountId, email, name, plan } }
+// or { status: "unauthenticated" | "pending" | "expired" | "error" }
+```
+
+### `getTokens(request, options?)`
+
+Returns a fresh access token or `undefined` when unauthenticated. Refreshes
+automatically, and concurrent calls share one refresh per session. The
+refresh token is redacted unless you pass `{ includeRefreshToken: true }`,
+which exists for exporting a session, not for request handling.
+
+Use it to build your own server-side AI route:
+
+```ts title="app/api/chat/route.ts"
+import { createChatGPT } from "@loginwithchatgpt/ai";
+import { streamText } from "ai";
+
+export async function POST(request: Request) {
+  const tokens = await auth.getTokens(request);
+  if (!tokens) return new Response("Unauthorized", { status: 401 });
+
+  const chatgpt = createChatGPT({ credentials: tokens });
+  const { prompt } = await request.json();
+
+  const result = streamText({ model: chatgpt(), prompt });
+  return result.toUIMessageStreamResponse();
+}
+```
+
+### `getModels(request)`
+
+Returns the account's model slugs, or `undefined` when unauthenticated.
+Refreshes tokens before calling upstream. Throws `ChatGPTAuthError` with code
+`models_request_failed` on upstream failure.
+
+## Session storage
+
+Sessions are stored under the cookie's session id. When `secret` is set, token
+JSON is AES-GCM encrypted before writing. The store contract:
+
+```ts
+interface KeyValueStore<T> {
+  get(key: string): Promise<T | undefined> | T | undefined;
+  set(key: string, value: T, options?: { ttlMs?: number }): Promise<void> | void;
+  delete(key: string): Promise<void> | void;
+}
+```
+
+`MemoryStore` (exported for tests and local dev) enforces TTL lazily at read
+time. How the cookie, store, and refresh cycle fit together is covered in
+[Sessions & tokens](/docs/concepts/sessions).

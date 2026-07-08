@@ -1,0 +1,134 @@
+---
+title: React
+description: The LoginWithChatGPT widget, the useLoginWithChatGPT hook, and the consent popup helper.
+---
+
+`@loginwithchatgpt/react` ships two layers over the same state machine: a
+drop-in widget and a hook for custom UIs. Both are client components and
+require a mounted [server handler](server.mdx).
+
+## `<LoginWithChatGPT />`
+
+```tsx title="components/sign-in.tsx"
+"use client";
+
+import { LoginWithChatGPT } from "@loginwithchatgpt/react";
+
+export function SignIn() {
+  return (
+    <LoginWithChatGPT
+      consent={{ appName: "Acme", securityHref: "https://acme.dev/security" }}
+      onAuthenticated={(user) => console.log("connected", user?.email)}
+      onError={(error) => console.error(error)}
+    />
+  );
+}
+```
+
+### Props
+
+Accepts every [hook option](#options) plus:
+
+| Prop | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `label` | `string` | `"Login with ChatGPT"` | Initial button label. |
+| `consent` | `{ appName?, continueLabel?, securityHref? }` | `{}` | Customizes the consent copy. The consent step itself always renders and cannot be turned off. |
+| `className`, `style` | — | — | Applied to the root element. |
+| `children` | `(auth: UseLoginWithChatGPTResult) => ReactNode` | — | Full custom renderer. Replaces all default UI, including consent. Render equivalent consent before calling `login()`. |
+
+### What it renders
+
+| State | UI |
+| --- | --- |
+| `loading` | Spinner with "Checking session…". |
+| `unauthenticated` | The login button. Clicking opens the consent popup; if popups are blocked, the same consent renders inline. |
+| `connecting` | Disabled button with spinner. |
+| `pending` | The user code with a copy button, verification link, and hint. |
+| `authenticated` | Connected chip with avatar, plan, and a Disconnect button. |
+| `expired` / `error` | Retryable error state; `error` text renders below the UI. |
+
+The widget injects one `<style id="lwc-styles">` element with `.lwc-*` classes
+on first mount. Override those classes to restyle without a custom renderer.
+
+## `useLoginWithChatGPT()`
+
+```tsx
+"use client";
+
+import { useLoginWithChatGPT } from "@loginwithchatgpt/react";
+
+const auth = useLoginWithChatGPT({ pollIntervalMs: 2500 });
+```
+
+See [Custom sign-in UI](/docs/guides/custom-ui) for a complete example.
+
+### Options
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `basePath` | `string` | `"/api/chatgpt"` | Must match the handler's `basePath`. |
+| `fetch` | `typeof fetch` | global `fetch` | For credentialed or cross-origin requests. |
+| `pollIntervalMs` | `number` | `2500` | Client cadence while `pending`. The server still respects the upstream interval, so lower values only tighten UI latency. |
+| `openPopup` | `boolean` | `true` | Open the verification URL after starting login. |
+| `autoCopyCode` | `boolean` | `true` | Copy the user code before opening the popup (clipboard writes fail after focus loss). |
+| `onAuthenticated` | `(user?: ChatGPTUser) => void` | — | Fires when status becomes `authenticated`. |
+| `onError` | `(error: Error) => void` | — | Fires when login startup fails. |
+
+### Returned value
+
+```ts
+interface UseLoginWithChatGPTResult {
+  status: "loading" | "unauthenticated" | "connecting" | "pending"
+        | "authenticated" | "expired" | "error";
+  user?: ChatGPTUser;          // when authenticated
+  userCode?: string;           // when pending
+  verificationUrl?: string;    // when pending
+  copied: boolean;             // true briefly after a clipboard write
+  error?: string;
+
+  login(options?: { popup?: Window | null }): Promise<void>;
+  logout(): Promise<void>;
+  copyCode(): Promise<void>;
+  reopen(): void;              // refocus or reopen the verification popup
+
+  isAuthenticated: boolean;
+  isPending: boolean;
+  isConnecting: boolean;
+}
+```
+
+Behavior notes:
+
+- On mount the hook checks `GET /session` once. Until it answers, `status`
+  is `"loading"`.
+- `login({ popup })` navigates a pre-opened window instead of opening a new
+  one. That is how the consent popup hands itself over.
+- `logout()` clears local state even if the network call fails.
+- All requests use `credentials: "same-origin"` unless you pass a `fetch`
+  wrapper.
+
+## `openLoginWithChatGPTConsentPopup()`
+
+Opens the built-in consent popup and, on continue, calls your `login` with
+that popup so the verification page loads in the same window:
+
+```ts
+import { openLoginWithChatGPTConsentPopup } from "@loginwithchatgpt/react";
+
+const popup = openLoginWithChatGPTConsentPopup({
+  appName: "Acme",
+  continueLabel: "I trust this app, continue",
+  securityHref: "https://acme.dev/security",
+  login: auth.login,
+});
+// null when the popup was blocked — fall back to inline consent.
+```
+
+## Icons
+
+`ChatGPTMark` and `Spinner` are exported as plain SVG components
+(`fill="currentColor"`, `aria-hidden`). `OpenAIMark` is a deprecated alias of
+`ChatGPTMark` kept for older imports.
+
+For a full custom-UI walkthrough with consent patterns, see
+[Custom sign-in UI](/docs/guides/custom-ui).

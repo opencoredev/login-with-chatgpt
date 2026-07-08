@@ -1,0 +1,169 @@
+---
+title: Quickstart
+description: Install the SDK, mount the server handler, render the sign-in button, and stream a response.
+icon: Rocket
+---
+
+This page wires the default path: a server route at `/api/chatgpt/*`, a React
+sign-in button, and a browser-safe AI SDK provider that streams through your
+backend.
+
+<Steps>
+<Step>
+
+### Install the packages
+
+```bash tab="bun"
+bun add @loginwithchatgpt/server @loginwithchatgpt/react @loginwithchatgpt/ai ai @ai-sdk/openai
+```
+
+```bash tab="npm"
+npm install @loginwithchatgpt/server @loginwithchatgpt/react @loginwithchatgpt/ai ai @ai-sdk/openai
+```
+
+```bash tab="pnpm"
+pnpm add @loginwithchatgpt/server @loginwithchatgpt/react @loginwithchatgpt/ai ai @ai-sdk/openai
+```
+
+`ai` and `@ai-sdk/openai` are peer dependencies of `@loginwithchatgpt/ai`.
+
+</Step>
+<Step>
+
+### Set a secret
+
+The secret signs the session cookie and encrypts tokens before they enter
+your session store. Without one, the SDK generates an ephemeral secret and
+logs a warning, and every restart logs everyone out.
+
+```bash title=".env"
+LWC_SECRET="use-the-output-of: openssl rand -hex 32"
+```
+
+</Step>
+<Step>
+
+### Mount the server handler
+
+`createChatGPTHandler()` returns one Web-standard handler that owns login,
+polling, logout, model listing, and the streaming proxy.
+
+```ts tab="Bun" title="index.ts"
+import { createChatGPTHandler } from "@loginwithchatgpt/server";
+import index from "./index.html";
+
+const auth = createChatGPTHandler({
+  secret: process.env.LWC_SECRET,
+  responsesProxy: {
+    allowedModels: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+  },
+});
+
+Bun.serve({
+  routes: {
+    "/": index,
+    "/api/chatgpt/*": (req) => auth.handler(req),
+  },
+});
+```
+
+```ts tab="Next.js" title="app/api/chatgpt/[...lwc]/route.ts"
+import { createChatGPTHandler } from "@loginwithchatgpt/server";
+
+const auth = createChatGPTHandler({
+  secret: process.env.LWC_SECRET,
+  responsesProxy: {
+    allowedModels: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+  },
+});
+
+export const GET = (request: Request) => auth.handler(request);
+export const POST = (request: Request) => auth.handler(request);
+```
+
+The handler only needs Web-standard `Request`, `Response`, `fetch`, and
+`crypto`, so any runtime with those works.
+
+</Step>
+<Step>
+
+### Render the sign-in button
+
+```tsx title="components/sign-in.tsx"
+"use client";
+
+import { LoginWithChatGPT } from "@loginwithchatgpt/react";
+
+export function SignIn() {
+  return (
+    <LoginWithChatGPT
+      consent={{ appName: "Acme" }}
+      onAuthenticated={() => console.log("ChatGPT session connected")}
+    />
+  );
+}
+```
+
+Clicking the button opens a consent popup first. It cannot be disabled, only
+customized. If the user continues, the same popup goes to OpenAI's
+verification page, the widget copies the user code, polls for completion, and
+renders the signed-in state:
+
+![The sign-in flow: consent, then the device code and verification window](/screenshots/sign-in.png)
+
+</Step>
+<Step>
+
+### Discover models and stream
+
+Model availability depends on the account and plan, so ask instead of
+hardcoding a list. The proxy provider sends everything to your handler, which
+injects credentials from the session cookie.
+
+```ts title="lib/chat.ts"
+import { createChatGPTProxyProvider } from "@loginwithchatgpt/ai";
+import { streamText } from "ai";
+
+const chatgpt = createChatGPTProxyProvider();
+
+export async function ask(prompt: string) {
+  const models = await chatgpt.listModels(); // GET /api/chatgpt/models
+  const model = models.includes("gpt-5.5") ? "gpt-5.5" : models[0];
+  if (!model) throw new Error("No ChatGPT models returned for this account.");
+
+  return streamText({ model: chatgpt(model), prompt });
+}
+```
+
+```ts
+const result = await ask("Explain HTTP cookies in one paragraph.");
+
+for await (const delta of result.textStream) {
+  process.stdout.write(delta);
+}
+```
+
+</Step>
+<Step>
+
+### Verify
+
+1. Click the button, continue past consent, and authorize in the OpenAI
+   window.
+2. `GET /api/chatgpt/session` returns `{ "status": "authenticated" }`.
+3. `GET /api/chatgpt/models` returns at least one model slug.
+4. A prompt streams text back through `POST /api/chatgpt/responses`.
+
+</Step>
+</Steps>
+
+## Next
+
+<Cards>
+  <Card title="Build a chat page" href="/docs/guides/chat-app">
+    Turn this into a real chat UI with a model picker and streaming output.
+  </Card>
+  <Card title="Production checklist" href="/docs/guides/production">
+    Shared session store, guardrails, and a smoke test before you deploy.
+  </Card>
+</Cards>

@@ -1,0 +1,84 @@
+---
+title: Response proxy
+description: What happens between streamText() in the browser and the ChatGPT-backed Codex endpoint.
+---
+
+The browser provider sends AI SDK traffic to `POST /api/chatgpt/responses`.
+The proxy exists so credentials never enter the browser, and so you have one
+chokepoint to police what a signed-in page can spend.
+
+## Request lifecycle
+
+For every proxied request, the handler:
+
+1. Verifies the signed session cookie. No cookie means `401`.
+2. Rejects cross-origin browser requests unless the origin is in
+   `allowedOrigins` (`403`).
+3. Applies the per-session rate limit (`429` with `retry-after`).
+4. Validates the JSON body: object shape, size under `maxRequestBytes`, model
+   in `allowedModels` if configured.
+5. Loads tokens and refreshes them if needed.
+6. Normalizes the body for the stateless Codex backend, then adds the bearer
+   token, account id header, and `client_version` query parameter.
+7. Streams the upstream body back with `cache-control: no-store`.
+
+## Guardrails and their defaults
+
+Every proxied request spends the signed-in user's own plan, so the proxy is
+not a generic pass-through:
+
+| Guardrail | Default | Option |
+| --- | --- | --- |
+| Rate limit | 30 requests / 60s per session | `responsesProxy.rateLimit` (`false` to disable) |
+| Body size | 8 MiB | `responsesProxy.maxRequestBytes` |
+| Model allowlist | all models | `responsesProxy.allowedModels` (array or predicate) |
+| Cross-origin browser calls | same-origin only | `allowedOrigins` |
+| Default model injection | `gpt-5.5` when the body omits `model` | `defaultModel` |
+
+```ts title="server.ts"
+const auth = createChatGPTHandler({
+  secret: process.env.LWC_SECRET,
+  responsesProxy: {
+    allowedModels: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
+    rateLimit: { limit: 10, windowMs: 60_000 },
+  },
+});
+```
+
+<Callout type="warn" title="The default rate-limit store is per instance">
+  The rate limiter counts in memory. Behind multiple instances or serverless
+  invocations, each instance counts separately. Pass a shared `store` in
+  `responsesProxy.rateLimit` to enforce the limit globally.
+</Callout>
+
+If you need custom quotas, audit logging, or stricter endpoint controls, set
+`enableResponsesProxy: false` (which also disables `/models`) and build your
+own route on [`auth.getTokens()`](/docs/reference/server#gettokensrequest-options).
+
+## Request normalization
+
+The ChatGPT-backed Codex endpoint is stateless and rejects some standard
+Responses API fields. `createCodexFetch()` from `@loginwithchatgpt/core`
+rewrites every body the same way for both the proxy and the direct provider:
+
+- Forces `store: false`. Turns are stateless.
+- Fills `instructions`, `reasoning` (`effort: "medium"`, `summary: "auto"`),
+  and `text.verbosity: "medium"` when the body leaves them out.
+- Adds `reasoning.encrypted_content` to `include`, so multi-turn reasoning
+  survives statelessness.
+- Drops `item_reference` input items and strips `id` fields from the rest.
+- Removes `max_output_tokens` and `max_completion_tokens`, which the endpoint
+  rejects.
+
+## SDK headers
+
+Browser code cannot rewrite proxied bodies, so two narrow headers let it opt
+into request settings. The server validates each value, writes it into the
+body, and returns `400` for anything else. The values and UI patterns are in
+[Fast tier & thinking effort](/docs/guides/fast-and-reasoning); the exact
+contract is in the [routes reference](/docs/reference/routes#post-responses).
+
+One behavior worth knowing here: if upstream rejects `service_tier=fast` for
+the session, the handler retries once without it and adds a
+`x-login-with-chatgpt-service-tier-fallback: auto` response header, so the
+request still streams.

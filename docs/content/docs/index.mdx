@@ -1,0 +1,75 @@
+---
+title: Introduction
+description: A TypeScript SDK that lets users sign in with their ChatGPT account so your app can stream AI responses on their plan.
+icon: BookOpen
+---
+
+**Login with ChatGPT** lets a user authorize your app with their ChatGPT
+account. Your backend then proxies model requests for that session through the
+Vercel AI SDK. The user brings their own plan, and you never ask them for an
+API key.
+
+Ownership is the point: tokens stay on your server, the browser only gets an
+HttpOnly session cookie, and every AI request flows through a proxy route you
+control.
+
+```text
+Browser button ──▶ POST /api/chatgpt/login ──▶ user authorizes on auth.openai.com
+                                                        │
+Browser polls GET /status ◀── server exchanges the code and stores encrypted tokens
+                                                        │
+streamText() ──▶ POST /api/chatgpt/responses ──▶ server injects tokens, streams back
+```
+
+<Callout type="warn" title="This is usage-bearing authorization">
+  A signed-in app can spend the user's own ChatGPT or Codex usage. That makes
+  it more than an identity login. The SDK ships mandatory consent, per-session
+  rate limits, and refresh-token redaction by default. Read the
+  [security model](concepts/security.mdx) before shipping.
+</Callout>
+
+## Use this when
+
+- You want users to bring their own ChatGPT account instead of paying for
+  their usage with your API key.
+- You need a login flow that works in serverless and containers. The
+  device-code flow has no localhost redirect listener.
+- You want a browser-safe AI SDK provider backed by your own session proxy.
+
+## Do not use this when
+
+- You need a stable, versioned API contract. This SDK mirrors the public
+  Codex OAuth client and ChatGPT-backed endpoints, which are not the OpenAI
+  Platform API and can change without notice.
+- You cannot keep refresh tokens server-side.
+- You want your own OpenAI API key to pay for usage. Use the official
+  `@ai-sdk/openai` provider for that.
+- Your use case has not been reviewed against OpenAI terms and policy.
+
+## Packages
+
+| Package | Job |
+| --- | --- |
+| `@loginwithchatgpt/server` | One Web-standard handler for login, polling, sessions, model listing, and the streaming proxy. |
+| `@loginwithchatgpt/react` | `useLoginWithChatGPT()` plus a drop-in `<LoginWithChatGPT />` widget with a built-in consent step. |
+| `@loginwithchatgpt/ai` | Vercel AI SDK providers: a browser-safe proxy provider and a server-side direct provider. |
+| `@loginwithchatgpt/core` | The primitives underneath: device-code OAuth, PKCE, token refresh, JWT parsing, and the Codex transport. |
+
+Most apps install the first three and never touch `core`.
+
+## Where to go
+
+<Cards>
+  <Card title="Quickstart" href="/docs/quickstart">
+    Install, mount the handler, render the button, stream a response.
+  </Card>
+  <Card title="Build a chat page" href="/docs/guides/chat-app">
+    A working chat UI with a model picker, in one component.
+  </Card>
+  <Card title="How it works" href="/docs/concepts/how-it-works">
+    The device-code flow and the session state machine.
+  </Card>
+  <Card title="Security model" href="/docs/concepts/security">
+    What a signed-in app can and cannot do.
+  </Card>
+</Cards>

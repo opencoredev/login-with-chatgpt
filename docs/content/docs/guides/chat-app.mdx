@@ -1,0 +1,141 @@
+---
+title: Build a chat page
+description: A working chat UI with sign-in, a model picker, and streamed responses, in one component.
+---
+
+This guide builds the smallest useful chat page: the sign-in widget, a model
+picker filled from the account, a prompt box, and a streamed answer. It is a
+trimmed-down version of the playground that ships in the repo:
+
+![The demo playground: model picker, fast toggle, thinking level, and a streamed response](/screenshots/playground.png)
+
+You need the [quickstart](/docs/quickstart) done first, so the handler is
+mounted at `/api/chatgpt/*`.
+
+## The component
+
+```tsx title="components/chat.tsx"
+"use client";
+
+import { ChatGPTProxyError, createChatGPTProxyProvider } from "@loginwithchatgpt/ai";
+import { LoginWithChatGPT } from "@loginwithchatgpt/react";
+import { streamText } from "ai";
+import { useEffect, useState } from "react";
+
+// Module-level: one provider per page load.
+const chatgpt = createChatGPTProxyProvider();
+
+export function Chat() {
+  const [models, setModels] = useState<string[]>([]);
+  const [model, setModel] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [running, setRunning] = useState(false);
+  const [needsLogin, setNeedsLogin] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    chatgpt
+      .listModels()
+      .then((list) => {
+        if (!active) return;
+        setModels(list);
+        setModel(list.includes("gpt-5.5") ? "gpt-5.5" : (list[0] ?? ""));
+        setNeedsLogin(false);
+      })
+      .catch((error) => {
+        if (!active) return;
+        // 401 means there is no session yet. Show the sign-in button.
+        if (error instanceof ChatGPTProxyError && error.status === 401) {
+          setNeedsLogin(true);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function send() {
+    if (running || !model || !prompt.trim()) return;
+    setRunning(true);
+    setAnswer("");
+    try {
+      const result = streamText({ model: chatgpt(model), prompt });
+      for await (const delta of result.textStream) {
+        setAnswer((current) => current + delta);
+      }
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  if (needsLogin) {
+    return (
+      <LoginWithChatGPT
+        consent={{ appName: "Acme" }}
+        onAuthenticated={() => window.location.reload()}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <select value={model} onChange={(e) => setModel(e.target.value)}>
+        {models.map((slug) => (
+          <option key={slug}>{slug}</option>
+        ))}
+      </select>
+      <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+      <button type="button" onClick={() => void send()} disabled={running}>
+        {running ? "Streaming…" : "Send"}
+      </button>
+      <pre>{answer}</pre>
+    </div>
+  );
+}
+```
+
+That is the whole loop. Three things carry it:
+
+- `listModels()` doubles as the session check. A `ChatGPTProxyError` with
+  status 401 means nobody is signed in, so the page swaps to the widget.
+- `streamText({ model: chatgpt(model), prompt })` goes to your
+  `/api/chatgpt/responses` proxy. The browser never sees a token.
+- `result.textStream` is an async iterable of text deltas. Appending them to
+  state is all the streaming UI you need to start.
+
+## Add a Fast toggle and thinking level
+
+Both are request headers the server validates. Wire them to two selects and
+pass them into `streamText`:
+
+```tsx
+const result = streamText({
+  model: chatgpt(model),
+  prompt,
+  headers: {
+    ...(fast ? { "x-login-with-chatgpt-service-tier": "fast" } : {}),
+    "x-login-with-chatgpt-reasoning-effort": thinking, // "low" | "medium" | "high"
+  },
+});
+```
+
+Only show the Fast toggle for models that support it, and say that it burns
+included usage faster. Details in
+[Fast tier & thinking effort](fast-and-reasoning.mdx).
+
+## Or run the finished version
+
+The repo ships the full playground from the screenshot above, with
+attachments, a fast toggle, thinking levels, and error states:
+
+```bash
+git clone https://github.com/loginwithchatgpt/login-with-chatgpt
+cd login-with-chatgpt
+bun install
+bun run demo   # http://localhost:3000
+```
+
+Its source is in `examples/demo/src/frontend.tsx` and is a good reference for
+handling edge cases this guide skips: attachment size limits, model-list
+fallbacks, and surfacing stream errors.

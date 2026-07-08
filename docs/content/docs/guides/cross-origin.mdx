@@ -1,0 +1,74 @@
+---
+title: Cross-origin setup
+description: Run the frontend and the handler on different origins with allowedOrigins, SameSite=None, and credentialed fetches.
+---
+
+By default everything assumes one origin: the cookie is `SameSite=Lax`,
+fetches use `credentials: "same-origin"`, and the handler rejects
+cross-origin browser requests. Splitting the frontend (`app.example.com`)
+from the API (`api.example.com`) takes changes on both sides.
+
+## Server: allow the origin and loosen the cookie
+
+```ts title="api server"
+import { createChatGPTHandler } from "@loginwithchatgpt/server";
+
+const auth = createChatGPTHandler({
+  secret: process.env.LWC_SECRET,
+  allowedOrigins: ["https://app.example.com"],
+  cookie: { sameSite: "None", secure: true },
+});
+```
+
+`allowedOrigins` lets the listed origins pass the CSRF check on
+cookie-authenticated non-GET routes (`/login`, `/logout`, `/responses`).
+Everything else still gets `403 { "error": "origin_not_allowed" }`.
+`SameSite=None` lets the browser send the cookie cross-site at all, and it
+requires `Secure`, so this setup is HTTPS-only.
+
+The handler decides who may send requests. CORS response headers are still
+your job: add `Access-Control-Allow-Origin` (the exact origin, never `*`),
+`Access-Control-Allow-Credentials: true`, and an `OPTIONS` preflight response
+in front of the handler.
+
+## Client: include credentials everywhere
+
+The hook and the proxy provider both need the handler's absolute URL and
+credentialed fetches:
+
+```tsx title="frontend"
+import { useLoginWithChatGPT } from "@loginwithchatgpt/react";
+import { createChatGPTProxyProvider } from "@loginwithchatgpt/ai";
+
+const basePath = "https://api.example.com/api/chatgpt";
+
+const auth = useLoginWithChatGPT({
+  basePath,
+  fetch: (input, init) => fetch(input, { ...init, credentials: "include" }),
+});
+
+const chatgpt = createChatGPTProxyProvider({
+  basePath,
+  credentials: "include", // used by listModels()
+  fetch: (input, init) => fetch(input, { ...init, credentials: "include" }), // used for streaming
+});
+```
+
+The proxy provider has both knobs on purpose: `credentials` covers its own
+`listModels()` call, and the `fetch` wrapper covers the requests the AI SDK
+makes to `/responses`.
+
+<Callout type="warn" title="Do not allow arbitrary origins">
+  Every origin in `allowedOrigins` can drive the signed-in user's session
+  from the browser. List your own frontends only, and never reflect the
+  request origin back in CORS headers.
+</Callout>
+
+## Verify
+
+1. Sign in from the frontend origin and confirm the `lwc_session` cookie has
+   `SameSite=None; Secure`.
+2. `GET /session` from the frontend returns `authenticated`, which proves the
+   cookie was sent.
+3. `POST /responses` streams, and the same request from an unlisted origin
+   returns `403`.

@@ -1,0 +1,103 @@
+---
+title: Troubleshooting
+description: Diagnose login, session, model, and streaming failures by symptom.
+---
+
+Start by probing the routes in order. Each one only works if the previous
+layer is healthy:
+
+```bash
+curl -i -X POST http://localhost:3000/api/chatgpt/login     # handler mounted?
+curl -i http://localhost:3000/api/chatgpt/session           # cookie & store?
+curl -i http://localhost:3000/api/chatgpt/models            # tokens & upstream?
+```
+
+Authenticated routes need the session cookie — probe them from the browser
+devtools console, or copy the cookie from a successful login.
+
+## The popup did not open
+
+Browsers only allow popups inside a direct user gesture.
+
+- Call `login()` (or open the consent popup) synchronously from the click
+  handler — do not `await` other work first.
+- Check `openPopup` is still `true`.
+- Expose `reopen()` as a button so users can recover from a blocked popup. The
+  default widget falls back to inline consent automatically.
+
+## The code did not copy
+
+Clipboard writes fail silently when the page loses focus or permission is
+denied — the SDK treats copying as best-effort. Always render the code
+visibly with a manual copy button.
+
+## `/session` stays `unauthenticated`
+
+In likely order:
+
+1. The browser is not sending the `lwc_session` cookie (wrong origin, or
+   missing `credentials: "include"` cross-origin).
+2. `basePath` on the client does not match the handler.
+3. The session store is process-local and this request hit another instance.
+   Use a [shared store](/docs/concepts/sessions#the-session-store).
+4. The user never finished the OpenAI authorization, or the code expired.
+
+Confirm server-side before debugging React:
+
+```ts
+const session = await auth.getSession(request);
+```
+
+## `/models` returns 401
+
+No authenticated session on that request. Send the user through login, or
+check the cookie is included (`credentials: "same-origin"` locally,
+`"include"` plus [cross-origin setup](/docs/guides/cross-origin) for split
+deployments).
+
+## Models are empty or "not supported"
+
+The account, plan, or `clientVersion` does not expose the model you picked.
+
+1. Call `listModels()` and pick only from that list.
+2. If the list itself is empty or the request fails, bump `clientVersion` —
+   see [client version drift](/docs/concepts/models#client-version-drift).
+
+## AI SDK throws `AI_NoOutputGeneratedError`
+
+The upstream stream contained no assistant text. Check the server log first.
+The handler logs upstream `/responses` failures as
+`[login-with-chatgpt] Codex /responses <status>: <body>`. Then verify:
+
+- the `model` came from `listModels()`,
+- the body does not rely on fields the
+  [normalizer strips](/docs/concepts/response-proxy#request-normalization),
+- `clientVersion` is current for the account.
+
+## Requests return 429
+
+The per-session rate limit (30/minute by default) fired. Honor the
+`retry-after` header, and review
+[`responsesProxy.rateLimit`](/docs/reference/server#responsesproxy) if the
+default does not fit your product.
+
+## Sessions disappear after restart
+
+You are using the in-memory store, an ephemeral secret, or both. Set a stable
+`LWC_SECRET` and a shared `sessionStore` — see the
+[production checklist](/docs/guides/production#required).
+
+## Session suddenly reports `expired`
+
+OpenAI invalidated the refresh token (revoked, reused, or expired). The
+handler deletes the dead session automatically; show the login button again:
+
+```ts
+const session = await auth.getSession(request);
+if (session.status === "expired") {
+  // render sign-in
+}
+```
+
+If you have an exact error code from a response body or a thrown error, look
+it up in [Error codes](errors.mdx).

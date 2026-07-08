@@ -1,0 +1,75 @@
+---
+title: Model discovery
+description: Treat the model list as account data, pick a sensible default, and survive client_version drift.
+---
+
+Available model slugs depend on the signed-in ChatGPT account, its plan, and
+the configured `clientVersion`. Treat the model list as account data you
+fetch, not application config you hardcode.
+
+## Listing models
+
+In the browser, the proxy provider calls `GET /api/chatgpt/models` through
+your handler:
+
+```ts title="browser"
+import { createChatGPTProxyProvider } from "@loginwithchatgpt/ai";
+
+const chatgpt = createChatGPTProxyProvider();
+const models = await chatgpt.listModels(); // ["gpt-5.5", "gpt-5.4", ...]
+```
+
+On the server, use the handler helper or the direct provider:
+
+```ts title="server"
+const models = await auth.getModels(request);
+if (!models) return new Response("Unauthorized", { status: 401 });
+```
+
+Both return a plain `string[]`. Upstream response wrappers vary, so the SDK
+extracts slugs tolerantly and ignores shapes it does not recognize
+(`extractCodexModelSlugs()` in `core` is the place to update if the wrapper
+changes).
+
+## Choosing a default
+
+Prefer the current recommended model when the account has it, instead of
+taking whatever slug happens to be first:
+
+```ts
+const models = await chatgpt.listModels();
+const model = models.includes("gpt-5.5") ? "gpt-5.5" : models[0];
+
+if (!model) throw new Error("No ChatGPT models returned for this account.");
+```
+
+Fast tier is not a separate model slug. It is a request setting that some
+models support, so keep the model picker and the tier toggle separate. See
+[Fast tier & thinking effort](/docs/guides/fast-and-reasoning).
+
+## Client version drift
+
+The Codex backend gates model availability behind a `client_version` query
+parameter. The SDK sends `DEFAULT_CLIENT_VERSION` (currently `0.142.5`), but
+the upstream requirement moves over time.
+
+If every model starts failing with "model not supported" errors:
+
+1. Call `GET /api/chatgpt/models` and check whether the list is empty.
+2. If it is empty, or upstream rejects the request, bump `clientVersion`:
+
+   ```ts title="server.ts"
+   const auth = createChatGPTHandler({
+     secret: process.env.LWC_SECRET,
+     clientVersion: "0.143.0",
+   });
+   ```
+
+3. Re-test login, model listing, and one streaming response.
+
+## Failure responses
+
+| Status | Meaning |
+| --- | --- |
+| `401` | No authenticated session. Send the user through login again. |
+| `502` or forwarded upstream status | Token refresh or upstream listing failed. The body includes `{ models: [], error, message }`. |

@@ -1,0 +1,46 @@
+---
+title: For AI agents
+description: llms.txt, per-page markdown, and how to point coding agents at these docs.
+icon: Bot
+---
+
+These docs are built to be read by agents as much as by people. Everything on
+the site is available as plain markdown.
+
+## Machine-readable endpoints
+
+| URL | Contents |
+| --- | --- |
+| [`/llms.txt`](/llms.txt) | The full page tree with descriptions. Start here. |
+| [`/llms-full.txt`](/llms-full.txt) | Every page's content in one file. |
+| `/llms.mdx/docs/<path>/content.md` | One page as markdown, e.g. [`/llms.mdx/docs/quickstart/content.md`](/llms.mdx/docs/quickstart/content.md). |
+
+A sitemap lives at `/sitemap.xml` and `robots.txt` allows all crawlers.
+
+## Pointing an agent at the docs
+
+For a one-off question, fetch the page directly:
+
+```bash
+curl -s https://<docs-host>/llms.mdx/docs/reference/server/content.md
+```
+
+For project-wide context, add a line to your repo's `CLAUDE.md` or `AGENTS.md`:
+
+```md title="AGENTS.md"
+When working with @loginwithchatgpt/* packages, fetch
+https://<docs-host>/llms.txt first and follow links from there.
+Verify option names against /docs/reference/server before writing code.
+```
+
+## What agents get wrong
+
+Two things trip up agents that rely on memorized patterns instead of these
+docs:
+
+- This SDK is not the OpenAI Platform API. There is no API key. Auth comes
+  from a user's ChatGPT session, and requests go through the app's own
+  `/api/chatgpt/responses` proxy.
+- Model slugs are per-account. Generated code should call `listModels()`
+  instead of hardcoding a slug. The [model discovery](concepts/models.mdx)
+  page has the pattern.

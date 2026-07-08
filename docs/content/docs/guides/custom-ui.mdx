@@ -1,0 +1,138 @@
+---
+title: Custom sign-in UI
+description: Build your own login UI with useLoginWithChatGPT() while keeping the consent obligation.
+---
+
+Use the hook when the default widget's styling does not fit your app. You get
+the same state machine and actions, and you own the markup. You also own the
+consent step.
+
+<Callout type="warn" title="Consent is your job now">
+  The default widget forces a usage-risk consent step. With a custom UI,
+  nothing forces it. Render equivalent informed consent before calling
+  `login()`, or reuse `openLoginWithChatGPTConsentPopup()` below.
+</Callout>
+
+## The hook
+
+```tsx title="components/chatgpt-login.tsx"
+"use client";
+
+import { useLoginWithChatGPT } from "@loginwithchatgpt/react";
+
+export function ChatGPTLogin() {
+  const auth = useLoginWithChatGPT();
+
+  if (auth.status === "loading") {
+    return <p>Checking ChatGPT session…</p>;
+  }
+
+  if (auth.status === "authenticated") {
+    return (
+      <button type="button" onClick={() => void auth.logout()}>
+        Disconnect {auth.user?.email}
+      </button>
+    );
+  }
+
+  if (auth.status === "pending") {
+    return (
+      <section>
+        <p>Enter this code in the OpenAI verification window.</p>
+        <button type="button" onClick={() => void auth.copyCode()}>
+          {auth.userCode}
+        </button>
+        {auth.copied ? <p>Copied.</p> : null}
+        <button type="button" onClick={auth.reopen}>
+          Reopen verification window
+        </button>
+      </section>
+    );
+  }
+
+  // unauthenticated, expired, or error: render consent, then login
+  return (
+    <section>
+      <p>
+        Continue only if you trust this app. It can send AI requests billed to
+        your own ChatGPT plan.
+      </p>
+      <button
+        type="button"
+        onClick={() => void auth.login()}
+        disabled={auth.isConnecting}
+      >
+        {auth.isConnecting ? "Connecting…" : "I trust this app, continue"}
+      </button>
+      {auth.error ? <p role="alert">{auth.error}</p> : null}
+    </section>
+  );
+}
+```
+
+Every option and returned field is in the [React reference](/docs/reference/react).
+
+## Reusing the built-in consent popup
+
+`openLoginWithChatGPTConsentPopup()` opens the same consent popup the default
+widget uses, then continues into `login()` inside that popup. That detail
+matters: browsers only allow popups inside a direct user gesture, and this
+keeps the whole flow in one window.
+
+```tsx
+import {
+  openLoginWithChatGPTConsentPopup,
+  useLoginWithChatGPT,
+} from "@loginwithchatgpt/react";
+
+const auth = useLoginWithChatGPT();
+
+function onClick() {
+  const popup = openLoginWithChatGPTConsentPopup({
+    appName: "Acme",
+    securityHref: "https://acme.dev/security",
+    login: auth.login,
+  });
+
+  if (!popup) {
+    // Popup blocked. Fall back to your own inline consent, then auth.login().
+  }
+}
+```
+
+`login()` also accepts a pre-opened window, for when you built your own
+consent popup and want the verification page to load into it:
+
+```ts
+const popup = window.open("", "login-with-chatgpt");
+// render your consent into the popup, and on continue:
+await auth.login({ popup });
+```
+
+## The `children` renderer
+
+To restyle the widget without reimplementing polling, pass a render function.
+It receives the full hook result and replaces the default UI, including the
+consent step:
+
+```tsx
+<LoginWithChatGPT>
+  {(auth) =>
+    auth.isAuthenticated ? (
+      <ConnectedChip user={auth.user} onDisconnect={auth.logout} />
+    ) : (
+      <MyConsentAndLogin auth={auth} />
+    )
+  }
+</LoginWithChatGPT>
+```
+
+## Accessibility notes
+
+- Use real `<button>` elements for `login`, `logout`, `copyCode`, and
+  `reopen`.
+- Keep the visible code selectable and offer a manual copy button. Clipboard
+  writes fail silently when the page loses focus.
+- Keep the verification link visible, and keep the pending state readable for
+  the full 15-minute code lifetime.
+- Surface `auth.error` with `role="alert"`.

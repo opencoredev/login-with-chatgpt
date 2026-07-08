@@ -1,0 +1,12 @@
+{
+  "title": "Guides",
+  "icon": "Map",
+  "pages": [
+    "chat-app",
+    "custom-ui",
+    "cross-origin",
+    "fast-and-reasoning",
+    "headless",
+    "production"
+  ]
+}

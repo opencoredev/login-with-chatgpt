@@ -1,0 +1,21 @@
+{
+  "name": "@loginwithchatgpt/example-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot run src/server.ts",
+    "start": "bun run src/server.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^4",
+    "@loginwithchatgpt/ai": "workspace:*",
+    "@loginwithchatgpt/core": "workspace:*",
+    "@loginwithchatgpt/react": "workspace:*",
+    "@loginwithchatgpt/server": "workspace:*",
+    "@phosphor-icons/react": "^2.1.10",
+    "ai": "^7",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

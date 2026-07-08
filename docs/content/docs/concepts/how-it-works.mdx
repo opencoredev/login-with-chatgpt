@@ -1,0 +1,65 @@
+---
+title: How it works
+description: The device-code login flow, the session state machine, and why polling is serverless-safe.
+---
+
+Login with ChatGPT is built around a server-owned session. The browser starts
+login and sends prompts, but it never receives access or refresh tokens. All
+it holds is an HttpOnly cookie that identifies the session on your server.
+
+## The device-code flow
+
+The SDK uses OAuth device authorization instead of a redirect flow, so your
+app never needs a localhost listener or a registered callback URL:
+
+1. The browser calls `POST /api/chatgpt/login`. The handler requests a device
+   code from `auth.openai.com` and stores it in the session.
+2. The browser shows the user code (something like `7B0J-DPK78`) and opens
+   OpenAI's verification page in a popup.
+3. The user enters the code and authorizes on OpenAI's page.
+4. The browser polls `GET /api/chatgpt/status`. Each request advances at most
+   one upstream poll, at the interval OpenAI asked for.
+5. Once authorized, the handler exchanges the code for tokens, encrypts them,
+   and writes them to the session store.
+6. From then on, `POST /api/chatgpt/responses` proxies AI requests with the
+   stored tokens injected server-side.
+
+Device codes expire after 15 minutes. If the user never finishes, the session
+becomes `expired` and the UI shows a retry state.
+
+## The state machine
+
+The server session and the React hook move through the same states:
+
+| State | Stored server-side | Browser sees |
+| --- | --- | --- |
+| `unauthenticated` | Nothing. | A login button. |
+| `pending` | Device auth id, user code, verification URL, poll interval, expiry. | The user code and a waiting state. |
+| `authenticated` | Encrypted tokens plus public user metadata. | Email, name, and plan only. |
+| `expired` | Nothing usable. The session was deleted. | A re-authentication state. |
+
+The React hook adds two client-only states: `loading` while it checks the
+session on mount, and `connecting` between clicking login and getting a device
+code.
+
+## Why polling is serverless-safe
+
+The server never runs a background loop. Each `GET /status` request performs
+at most one upstream poll and returns. If the client stops polling, nothing
+keeps running. The handler tracks `lastPolledAt` per session, so a client that
+polls aggressively still cannot hit OpenAI faster than the requested interval.
+
+That is also why the flow works on serverless runtimes: all state lives in
+the session store, and every step is an ordinary request/response cycle.
+
+## Token boundaries
+
+`accessToken`, `refreshToken`, and `idToken` are server secrets. They are
+encrypted at rest and never appear in a route response. The only user data
+the browser gets is `ChatGPTUser` (account id, email, name, plan), which comes
+from id-token claims.
+
+Server helpers like `getTokens()` refresh before returning and redact the
+refresh token by default, so app code never holds a credential that can mint
+new tokens indefinitely. [Sessions & tokens](sessions.mdx) covers the
+mechanics.

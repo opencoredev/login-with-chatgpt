@@ -1,0 +1,80 @@
+---
+title: Production checklist
+description: Everything to set, review, and verify before real users sign in.
+---
+
+Local defaults are forgiving on purpose: an ephemeral secret, an in-memory
+store, no model restrictions. Production needs deliberate choices. Work down
+this list.
+
+## Required
+
+Set a stable `secret` from your host's environment manager. Without one the
+SDK generates an ephemeral secret per boot, and every restart logs everyone
+out. Rotating the secret does the same, so plan rotations.
+
+```bash title=".env"
+LWC_SECRET="$(openssl rand -hex 32)"
+```
+
+Use a shared `sessionStore`. The default `MemoryStore` loses sessions on
+restart and does not work across serverless invocations, containers, or
+preview deployments. Back it with Redis or a database; the
+[interface is three methods](/docs/concepts/sessions#the-session-store).
+
+Keep consent intact. Ship the default widget's consent step, or equivalent
+informed consent before `login()` in custom UIs
+([why](/docs/concepts/security#user-consent)).
+
+Use HTTPS, and confirm your reverse proxy forwards `X-Forwarded-Proto` so the
+session cookie gets `Secure`
+([details](/docs/concepts/sessions#the-session-cookie)).
+
+## Proxy guardrails
+
+- Set `responsesProxy.allowedModels` to the models your product actually
+  offers.
+- Review the default rate limit (30 requests/minute per session) for your
+  product. Pass a shared `rateLimit.store` when running multiple instances,
+  because the default counter is per instance.
+- Keep `responsesProxy.maxRequestBytes` (8 MiB default) in line with the
+  attachments you accept, and cap prompt size and attachment types at your
+  app boundary.
+- Add an operator kill switch in front of `/responses` for abuse
+  emergencies.
+- If you need custom quotas or audit logging, disable the built-in proxy
+  (`enableResponsesProxy: false`) and build on
+  [`auth.getTokens()`](/docs/reference/server#gettokensrequest-options).
+
+```ts title="server.ts"
+const auth = createChatGPTHandler({
+  secret: process.env.LWC_SECRET,
+  sessionStore: redisStore,
+  responsesProxy: {
+    allowedModels: ["gpt-5.5", "gpt-5.4-mini"],
+    rateLimit: { limit: 20, windowMs: 60_000, store: redisRateLimitStore },
+  },
+});
+```
+
+## Topology
+
+Same-origin apps can leave `allowedOrigins` unset and keep the default
+`SameSite=Lax` cookie. A split frontend and backend needs the
+[cross-origin guide](cross-origin.mdx): `allowedOrigins`, `SameSite=None`,
+credentialed fetches, and your own CORS headers.
+
+Never forward `getTokens({ includeRefreshToken: true })` output anywhere. The
+default redacted tokens are enough for every AI SDK call.
+
+## Operations
+
+- Give users a visible sign-out that hits `/logout`, and delete sessions
+  server-side when they close their account.
+- Log `/responses` metadata (session id, model, status, duration) for abuse
+  review. Do not log prompts or attachments.
+- Smoke-test after every deploy and dependency upgrade: login, `GET /models`
+  returns slugs, one streaming response completes. The upstream endpoints are
+  [not a versioned API](/docs/concepts/security#compatibility-caveat), so
+  this catches drift early.
+- Review OpenAI terms and policy for your use case before launch.

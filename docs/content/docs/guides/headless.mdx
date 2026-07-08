@@ -1,0 +1,86 @@
+---
+title: Headless & CLI logins
+description: Run the device-code flow without a browser using the core primitives, then stream with the direct provider.
+---
+
+The browser widget is optional. For CLIs, scripts, and backend jobs, run the
+device-code flow directly with `@loginwithchatgpt/core` and hand the tokens
+to the server-side AI provider.
+
+## A complete CLI login
+
+```ts title="login-cli.ts"
+import {
+  requestDeviceCode,
+  resolveConfig,
+  waitForDeviceTokens,
+} from "@loginwithchatgpt/core";
+import { createChatGPT } from "@loginwithchatgpt/ai";
+import { streamText } from "ai";
+
+const config = resolveConfig();
+
+const device = await requestDeviceCode(config);
+console.log(`Open ${device.verificationUrl} and enter: ${device.userCode}`);
+
+const tokens = await waitForDeviceTokens(config, device, {
+  onPoll: (attempt) => console.log(`Waiting for authorization… (${attempt})`),
+});
+
+const chatgpt = createChatGPT({ credentials: tokens });
+const result = streamText({
+  model: chatgpt(), // defaults to gpt-5.5
+  prompt: "Say hello from a CLI.",
+});
+
+for await (const delta of result.textStream) {
+  process.stdout.write(delta);
+}
+```
+
+The repo has a runnable version at `examples/demo/src/login-cli.ts`.
+
+`waitForDeviceTokens()` blocks until the user authorizes, polling at the
+interval OpenAI requested. It throws a `ChatGPTAuthError` with code
+`authorization_expired` if the 15-minute device code runs out, and accepts an
+`AbortSignal`:
+
+```ts
+const controller = new AbortController();
+const tokens = await waitForDeviceTokens(config, device, {
+  signal: controller.signal,
+});
+```
+
+## Persisting tokens across runs
+
+`createChatGPT` accepts a credentials loader plus an `onRefresh` callback, so
+rotated tokens survive process restarts:
+
+```ts title="provider with persistence"
+const chatgpt = createChatGPT({
+  credentials: () => loadTokensFromDisk(),
+  onRefresh: (next) => saveTokensToDisk(next),
+});
+```
+
+Store the token JSON like any secret. It contains a refresh token that keeps
+working until the session is revoked or expires. And reuse persisted tokens
+instead of re-running the flow: each device-code authorization creates
+another session against the user's account.
+
+## Step-by-step control
+
+If you want custom polling UI, drive the flow manually instead of
+`waitForDeviceTokens()`:
+
+```ts
+import { exchangeDeviceAuthorization, pollDeviceCode } from "@loginwithchatgpt/core";
+
+const poll = await pollDeviceCode(config, device);
+if (poll.status === "authorized") {
+  const tokens = await exchangeDeviceAuthorization(config, poll);
+}
+```
+
+The full primitive list is in the [core reference](/docs/reference/core).
