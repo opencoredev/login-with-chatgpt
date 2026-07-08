@@ -1,193 +1,45 @@
-# Login with ChatGPT
+<h1 align="center">&lt;LoginWithChatGPT /&gt;</h1>
 
-TypeScript packages for adding ChatGPT account login to an app, then streaming
-responses through the signed-in user's session.
+<p align="center">A simple SDK that lets your users log in with their ChatGPT account.</p>
 
-The server keeps tokens private. The browser gets an HttpOnly session cookie,
-discovers the account's available models through your backend, and can use the
-Vercel AI SDK without seeing an access token.
+<p align="center">
+  <a href="https://www.npmjs.com/package/@opencoredev/loginwithchatgpt-core"><img alt="npm version" src="https://shieldcn.dev/npm/@opencoredev/loginwithchatgpt-core.svg?variant=secondary&mode=dark" /></a>
+  <a href="https://github.com/opencoredev/login-with-chatgpt/stargazers"><img alt="GitHub stars" src="https://shieldcn.dev/github/opencoredev/login-with-chatgpt/stars.svg?variant=branded&mode=dark" /></a>
+  <a href="https://x.com/leodev"><img alt="Follow @leodev on X" src="https://shieldcn.dev/x/follow/leodev.svg?variant=branded&mode=dark" /></a>
+</p>
 
-> Compatibility note: this SDK uses the public Codex OAuth client and
-> ChatGPT-backed Codex endpoints. Those endpoints are not the official,
-> versioned OpenAI Platform API. Keep the client version and endpoints
-> configurable, and smoke test login, model listing, and streaming before
-> shipping.
+- Users bring their own ChatGPT subscription
+- Tokens never touch the browser: HttpOnly cookie only
+- Works with the Vercel AI SDK: `streamText()` straight from the client
+- Open source, MIT licensed
 
-## Packages
+Your server keeps the tokens. The browser gets a session cookie, asks your backend which models the account has, and streams from there.
 
-| Package | Job |
-| --- | --- |
-| `@opencoredev/loginwithchatgpt-core` | Device-code OAuth, PKCE helpers, token refresh, JWT parsing, Codex transport normalization, and model discovery. |
-| `@opencoredev/loginwithchatgpt-server` | A Web-standard handler for login, status, session, logout, models, and responses proxying. |
-| `@opencoredev/loginwithchatgpt-react` | `useLoginWithChatGPT()` and a styled `<LoginWithChatGPT />` widget. |
-| `@opencoredev/loginwithchatgpt-ai` | Vercel AI SDK providers for browser proxy mode and direct server-token mode. |
-
-## Quickstart
+## Install
 
 ```bash
 bun add @opencoredev/loginwithchatgpt-server @opencoredev/loginwithchatgpt-react @opencoredev/loginwithchatgpt-ai
-bun add ai @ai-sdk/openai
-# or: npm install / pnpm add — the packages ship compiled ESM + types for Node 18+
 ```
 
-Mount the backend handler:
+npm and pnpm work too. Everything ships as ESM with types for Node 18+.
 
-```ts
-import { createChatGPTHandler } from "@opencoredev/loginwithchatgpt-server";
-import index from "./index.html";
+## Packages
 
-const auth = createChatGPTHandler({
-  secret: process.env.LWC_SECRET,
-  responsesProxy: {
-    allowedModels: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
-    maxRequestBytes: 8 * 1024 * 1024,
-  },
-});
+| Package | Does |
+| --- | --- |
+| `@opencoredev/loginwithchatgpt-core` | OAuth, token refresh, model discovery |
+| `@opencoredev/loginwithchatgpt-server` | Backend handler: login, session, logout, models, responses proxy |
+| `@opencoredev/loginwithchatgpt-react` | The `<LoginWithChatGPT />` button and hook |
+| `@opencoredev/loginwithchatgpt-ai` | Vercel AI SDK providers |
 
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/chatgpt/*": (req) => auth.handler(req),
-  },
-});
-```
+## Docs
 
-Render the button:
+Start with the [quickstart](./docs/content/docs/quickstart.mdx). The [security model](./docs/content/docs/concepts/security.mdx) explains how tokens stay on your server, and the [production checklist](./docs/content/docs/guides/production.mdx) is there for when you deploy.
 
-```tsx
-"use client";
+## Star history
 
-import { LoginWithChatGPT } from "@opencoredev/loginwithchatgpt-react";
+<p align="center">
+  <a href="https://github.com/opencoredev/login-with-chatgpt/stargazers"><img alt="Star history" src="https://shieldcn.dev/chart/github/stars/opencoredev/login-with-chatgpt.svg?mode=dark" /></a>
+</p>
 
-export function SignIn() {
-  return (
-    <LoginWithChatGPT
-      basePath="/api/chatgpt"
-      consent={{ appName: "Acme" }}
-    />
-  );
-}
-```
-
-The default widget always opens a consent popup first — it warns the user that
-requests bill to their own ChatGPT plan, and it cannot be disabled (only
-customized via `consent={{ appName, securityHref }}`). If the popup is blocked,
-the same consent renders inline. If the user continues, the popup navigates to
-OpenAI's verification page. Custom UIs built on the hook must render equivalent
-consent themselves.
-
-Use the browser-safe AI SDK proxy:
-
-```ts
-import { createChatGPTProxyProvider } from "@opencoredev/loginwithchatgpt-ai";
-import { streamText } from "ai";
-
-const chatgpt = createChatGPTProxyProvider({ basePath: "/api/chatgpt" });
-const models = await chatgpt.listModels();
-const model = models.includes("gpt-5.5")
-  ? "gpt-5.5"
-  : models[0];
-
-if (!model) throw new Error("No ChatGPT models were returned for this account.");
-
-const result = streamText({
-  model: chatgpt(model),
-  prompt: "Explain HTTP cookies in one paragraph.",
-});
-
-for await (const delta of result.textStream) {
-  process.stdout.write(delta);
-}
-```
-
-## Server helpers
-
-```ts
-const session = await auth.getSession(request);
-const tokens = await auth.getTokens(request);
-const models = await auth.getModels(request);
-```
-
-Use `getTokens()` for direct server-side AI SDK calls:
-
-```ts
-import { createChatGPT } from "@opencoredev/loginwithchatgpt-ai";
-
-const tokens = await auth.getTokens(request);
-if (!tokens) return new Response("Unauthorized", { status: 401 });
-
-const chatgpt = createChatGPT({ credentials: tokens });
-```
-
-`getTokens()` returns only the short-lived access token — the refresh token
-stays inside the handler's session layer, so app code never holds a credential
-that can mint new tokens indefinitely. Pass `{ includeRefreshToken: true }`
-only if you truly need to export a session.
-
-## Built-in protections
-
-Signing in with ChatGPT hands an app real spending power over the user's plan,
-so the server handler defends the user by default:
-
-- Tokens never reach the browser; the session cookie is HttpOnly and signed,
-  and tokens are AES-GCM encrypted at rest.
-- The refresh token is never exposed to app code unless explicitly requested.
-- The `/responses` proxy rate limits each session (30 requests/minute default,
-  tune via `responsesProxy.rateLimit`) so client code can't silently burn a
-  user's plan.
-- Cookie-authenticated non-GET routes reject cross-origin browser requests
-  unless allowlisted via `allowedOrigins` — no CSRF cookie-riding, even with
-  `SameSite=None`.
-- The default widget always shows a usage-risk consent step before OpenAI's
-  verification page; it can be customized but not disabled.
-- The OAuth session is scoped by OpenAI to the Codex API: it can spend plan
-  usage but cannot sign in to chatgpt.com as the user, read their
-  conversations, or change account settings.
-
-## Production checklist
-
-- Set a stable `LWC_SECRET`.
-- Use a shared `sessionStore` outside local development.
-- Keep tokens server-side.
-- If you build a custom login UI, render consent equivalent to the built-in
-  popup before calling `login()`.
-- Restrict the built-in responses proxy with `responsesProxy.allowedModels` and
-  `responsesProxy.maxRequestBytes`, and review the default per-session
-  `responsesProxy.rateLimit` (back it with a shared store across instances).
-- Use `chatgpt.listModels()` or `auth.getModels(request)` instead of hardcoding a long model list.
-- Configure cookies and CORS explicitly for cross-origin frontend/backend
-  setups, and list your frontend in `allowedOrigins`.
-- Rate limit `/login` and `/status` at the edge (WAF/CDN/gateway). They are
-  unauthenticated by design, so the handler can't rate limit them itself.
-- Review OpenAI terms and policy for your use case.
-
-## Demo
-
-```bash
-bun install
-bun run demo
-```
-
-The demo mounts the server handler at `/api/chatgpt/*`, renders the React sign-in
-flow, discovers models with `chatgpt.listModels()`, and streams a response.
-
-## Runtime support
-
-Every package is dual-published: Node (and any bundler) consumes compiled ESM
-plus type declarations from `dist/`, while Bun consumes the TypeScript source
-directly through the `bun` export condition — no build step needed in Bun
-projects or in this repo.
-
-## Development
-
-```bash
-bun run typecheck
-bun test packages
-bun run build   # emit dist/ for all packages (runs automatically on publish)
-```
-
-Docs live in `docs/` and are intentionally outside the root Bun workspace.
-
-## License
-
-MIT
+<p align="center"><sub><a href="./LICENSE">MIT License</a> · Built by <a href="https://x.com/leodev">@leodev</a></sub></p>

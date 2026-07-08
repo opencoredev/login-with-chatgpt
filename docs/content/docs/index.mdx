@@ -38,9 +38,6 @@ streamText() ──▶ POST /api/chatgpt/responses ──▶ server injects toke
 
 ## Do not use this when
 
-- You need a stable, versioned API contract. This SDK mirrors the public
-  Codex OAuth client and ChatGPT-backed endpoints, which are not the OpenAI
-  Platform API and can change without notice.
 - You cannot keep refresh tokens server-side.
 - You want your own OpenAI API key to pay for usage. Use the official
   `@ai-sdk/openai` provider for that.
