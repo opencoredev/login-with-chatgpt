@@ -38,9 +38,8 @@ Verify option names against /docs/reference/server before writing code.
 Two things trip up agents that rely on memorized patterns instead of these
 docs:
 
-- This SDK is not the OpenAI Platform API. There is no API key. Auth comes
-  from a user's ChatGPT session, and requests go through the app's own
-  `/api/chatgpt/responses` proxy.
+- There is no API key. Auth comes from a user's ChatGPT session, and
+  requests go through the app's own `/api/chatgpt/responses` proxy.
 - Model slugs are per-account. Generated code should call `listModels()`
   instead of hardcoding a slug. The [model discovery](concepts/models.mdx)
   page has the pattern.

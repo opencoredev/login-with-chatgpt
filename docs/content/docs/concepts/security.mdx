@@ -90,11 +90,3 @@ account anyway, link:
 
 - [ChatGPT security settings](https://chatgpt.com/#settings/Security)
 - [Managing active sessions in ChatGPT](https://help.openai.com/en/articles/20001257-managing-active-sessions-in-chatgpt)
-
-## Compatibility caveat
-
-This SDK does not use the versioned OpenAI Platform API. Endpoint paths can
-move, `clientVersion` goes stale, model slugs differ by account, and OpenAI
-policy can change independently of this package. Keep
-[model discovery](models.mdx) in your app, smoke-test the flow after every
-deploy, and review OpenAI terms for your use case.

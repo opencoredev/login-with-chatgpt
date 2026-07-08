@@ -42,4 +42,4 @@ const models = await listCodexModels({
 | Storage | `KeyValueStore`, `MemoryStore` |
 | Config/errors | `resolveConfig`, `ChatGPTConfig`, `ChatGPTAuthError` |
 
-See the root README and docs site for compatibility and production notes.
+See the root README and docs site for production notes.

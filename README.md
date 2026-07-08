@@ -36,8 +36,6 @@ npm and pnpm work too. Everything ships as ESM with types for Node 18+.
 
 Start with the [quickstart](./docs/content/docs/quickstart.mdx). The [security model](./docs/content/docs/concepts/security.mdx) explains how tokens stay on your server, and the [production checklist](./docs/content/docs/guides/production.mdx) is there for when you deploy.
 
-One thing to know: this uses the public Codex OAuth client and Codex endpoints, not the official OpenAI Platform API. Smoke test login and streaming before you ship.
-
 ## Star history
 
 <p align="center">

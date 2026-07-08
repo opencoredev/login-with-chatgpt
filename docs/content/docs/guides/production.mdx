@@ -74,7 +74,5 @@ default redacted tokens are enough for every AI SDK call.
 - Log `/responses` metadata (session id, model, status, duration) for abuse
   review. Do not log prompts or attachments.
 - Smoke-test after every deploy and dependency upgrade: login, `GET /models`
-  returns slugs, one streaming response completes. The upstream endpoints are
-  [not a versioned API](/docs/concepts/security#compatibility-caveat), so
-  this catches drift early.
+  returns slugs, one streaming response completes.
 - Review OpenAI terms and policy for your use case before launch.
