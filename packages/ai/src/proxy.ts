@@ -14,7 +14,7 @@ export interface CreateChatGPTProxyOptions {
   fetch?: FetchLike;
   /** Extra headers merged into every request. */
   headers?: Record<string, string>;
-  /** Credentials mode for `listModels()`. Defaults to same-origin. */
+  /** Credentials mode for `listModels()` and `images.*()` requests. Defaults to same-origin. */
   credentials?: RequestCredentials;
   /** Default model id when none is passed to the provider. */
   defaultModel?: string;

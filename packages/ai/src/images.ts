@@ -290,15 +290,19 @@ async function readImageResponse(
     }
   };
 
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = blocks.pop() ?? "";
-    for (const block of blocks) await consumeBlock(block);
-    if (done) break;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const blocks = buffer.split(/\r?\n\r?\n/);
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) await consumeBlock(block);
+      if (done) break;
+    }
+    if (buffer.trim()) await consumeBlock(buffer);
+  } finally {
+    reader.releaseLock();
   }
-  if (buffer.trim()) await consumeBlock(buffer);
 
   if (finalCall) return finalCall;
   if (streamError) throw streamError;

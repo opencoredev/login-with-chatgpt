@@ -133,7 +133,7 @@ const result = streamText({
 | --- | --- | --- | --- |
 | `basePath` | `string` | `"/api/chatgpt"` | Handler mount path. Use an absolute URL for cross-origin setups. |
 | `fetch` | `FetchLike` | global `fetch` | Wraps the AI SDK's own requests to `/responses`. |
-| `credentials` | `RequestCredentials` | `"same-origin"` | Used by `listModels()`. |
+| `credentials` | `RequestCredentials` | `"same-origin"` | Used by `listModels()` and `images.*()` requests; use `"include"` cross-origin. |
 | `headers` | `Record<string, string>` | n/a | Extra headers on every request. |
 | `defaultModel` | `string` | `"gpt-5.5"` | Used by `chatgpt()` with no argument. |
 

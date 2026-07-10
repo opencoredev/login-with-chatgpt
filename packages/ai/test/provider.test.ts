@@ -268,6 +268,21 @@ describe("createChatGPTProxyProvider", () => {
       message: "The image could not be generated.",
     } satisfies Partial<ChatGPTImageError>);
   });
+
+  test("releases the response stream reader when reading fails", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("stream disconnected"));
+      },
+    });
+    const fetch = createMockFetch(() =>
+      new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+    );
+    const chatgpt = createChatGPTProxyProvider({ fetch });
+
+    await expect(chatgpt.images.generate({ prompt: "image" })).rejects.toThrow("stream disconnected");
+    expect(stream.locked).toBeFalse();
+  });
 });
 
 function sseResponse(events: unknown[]): Response {
