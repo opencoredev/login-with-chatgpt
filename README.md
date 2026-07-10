@@ -11,6 +11,7 @@
 - Users bring their own ChatGPT subscription
 - Tokens never touch the browser: HttpOnly cookie only
 - Works with the Vercel AI SDK: `streamText()` straight from the client
+- Generates and edits images with size, quality, format, masks, and streaming previews
 - Open source, MIT licensed
 
 The handler keeps tokens behind the proxy path by default. The browser gets a session cookie, asks your backend which models the account has, and streams from there.

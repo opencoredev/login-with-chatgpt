@@ -53,7 +53,7 @@ those APIs. The routes it serves are documented in [HTTP routes](routes.mdx).
 | Option | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `allowedModels` | `readonly string[] \| (model: string) => boolean` | all allowed | Disallowed models get `403 model_not_allowed`. |
-| `maxRequestBytes` | `number` | `8_388_608` (8 MiB) | Maximum raw JSON body size. |
+| `maxRequestBytes` | `number` | `41_943_040` (40 MiB) | Maximum raw JSON body size, including base64 image-editing inputs. |
 | `rateLimit` | `false \| { limit?, windowMs?, store? }` | `{ limit: 30, windowMs: 60_000 }` | Per-session limit; `false` disables. Default store is per-instance memory; pass a shared `store` across instances. |
 
 ### Codex request defaults

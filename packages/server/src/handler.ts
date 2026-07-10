@@ -22,7 +22,7 @@ import { SessionManager, type StoredSession } from "./session.ts";
 const DEFAULT_BASE_PATH = "/api/chatgpt";
 const DEFAULT_COOKIE_NAME = "lwc_session";
 const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const DEFAULT_MAX_RESPONSES_BODY_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_RESPONSES_BODY_BYTES = 40 * 1024 * 1024;
 const DEFAULT_RESPONSES_RATE_LIMIT = 30;
 const DEFAULT_RESPONSES_RATE_WINDOW_MS = 60 * 1000;
 const SERVICE_TIER_HEADER = "x-login-with-chatgpt-service-tier";
@@ -36,7 +36,7 @@ export interface ResponsesProxyPolicy {
    * unset to allow any model returned/accepted by the signed-in account.
    */
   allowedModels?: readonly string[] | ((model: string) => boolean);
-  /** Maximum raw JSON request body accepted by `/responses`. Defaults to 8 MiB. */
+  /** Maximum raw JSON request body accepted by `/responses`. Defaults to 40 MiB for image editing inputs. */
   maxRequestBytes?: number;
   /**
    * Per-session rate limit for the `/responses` proxy. Requests through the

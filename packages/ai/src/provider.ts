@@ -12,6 +12,7 @@ import {
   listCodexModels,
   resolveConfig,
 } from "@opencoredev/loginwithchatgpt-core";
+import { createChatGPTImagesClient, type ChatGPTImagesClient } from "./images.ts";
 
 /** A responses-API model created by a {@link ChatGPTProvider}. */
 export type ChatGPTLanguageModel = ReturnType<OpenAIProvider["responses"]>;
@@ -27,6 +28,8 @@ export interface ChatGPTProvider {
   readonly openai: OpenAIProvider;
   /** Lists model slugs available to the signed-in ChatGPT account. */
   listModels(): Promise<string[]>;
+  /** Generates and edits images through the signed-in user's ChatGPT plan. */
+  readonly images: ChatGPTImagesClient;
 }
 
 export interface CreateChatGPTOptions extends ChatGPTConfig, CodexResponsesOptions {
@@ -91,25 +94,34 @@ export function createChatGPT(options: CreateChatGPTOptions): ChatGPTProvider {
     return { accessToken: fresh.accessToken, accountId: fresh.accountId };
   };
 
+  const codexFetch = createCodexFetch({
+    config,
+    getAuth,
+    headers: options.headers,
+    instructions: options.instructions,
+    reasoningEffort: options.reasoningEffort,
+    reasoningSummary: options.reasoningSummary,
+    textVerbosity: options.textVerbosity,
+    serviceTier: options.serviceTier,
+  });
+
   const openai = createOpenAI({
     baseURL: config.codexBaseUrl,
     apiKey: "login-with-chatgpt", // placeholder; real auth is injected by the fetch
-    fetch: createCodexFetch({
-      config,
-      getAuth,
-      headers: options.headers,
-      instructions: options.instructions,
-      reasoningEffort: options.reasoningEffort,
-      reasoningSummary: options.reasoningSummary,
-      textVerbosity: options.textVerbosity,
-      serviceTier: options.serviceTier,
-    }),
+    fetch: codexFetch,
+  });
+
+  const images = createChatGPTImagesClient({
+    fetch: codexFetch,
+    responsesUrl: `${config.codexBaseUrl}/responses`,
+    defaultModel,
   });
 
   const provider = ((modelId?: string) => openai.responses(modelId ?? defaultModel)) as ChatGPTProvider;
   Object.defineProperties(provider, {
     responses: { value: (modelId?: string) => openai.responses(modelId ?? defaultModel), enumerable: true },
     openai: { value: openai, enumerable: true },
+    images: { value: images, enumerable: true },
     listModels: {
       value: () => listCodexModels({ config, getAuth, headers: options.headers }),
       enumerable: true,

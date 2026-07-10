@@ -87,7 +87,7 @@ Key options: `basePath`, `secret`, `sessionStore` (any
 `get`/`set`/`delete` key-value store), `cookieName`, `cookie`,
 `sessionTtlMs` (30 days), `defaultModel` (`"gpt-5.5"`),
 `enableResponsesProxy` (`false` also disables `/models`), `responsesProxy`
-(`allowedModels`, `maxRequestBytes` 8 MiB, `rateLimit` default
+(`allowedModels`, `maxRequestBytes` 40 MiB, `rateLimit` default
 30/min/session), `allowedOrigins` (cross-origin CSRF allowlist).
 
 Server helpers on the returned handler (all read the session cookie):
@@ -155,9 +155,13 @@ export async function POST(request: Request) {
 ```
 
 Models support `streamText`, `generateText`, tool calling, structured
-output, and file attachments via standard AI SDK `messages`. For
-embeddings/images/audio, use the official OpenAI provider with an API key
-instead. This SDK only covers the responses endpoint.
+output, and file attachments via standard AI SDK `messages`. Images are a
+first-class provider API: use `chatgpt.images.generate()` for prompt-to-image
+and `chatgpt.images.edit()` for edits, multiple references, masks, input
+fidelity, custom size, quality, format, compression, background, multiple
+outputs, and partial-image callbacks. Both use the signed-in user's ChatGPT
+plan through `/responses`; do not add an API key. Embeddings and audio are not
+provided.
 
 Per-request tuning headers on `POST /responses`:
 `x-login-with-chatgpt-reasoning-effort` (`none|low|medium|high|xhigh`) and

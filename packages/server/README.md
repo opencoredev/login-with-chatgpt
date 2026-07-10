@@ -13,7 +13,7 @@ const auth = createChatGPTHandler({
   secret: process.env.LWC_SECRET,
   responsesProxy: {
     allowedModels: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
-    maxRequestBytes: 8 * 1024 * 1024,
+    maxRequestBytes: 40 * 1024 * 1024,
   },
 });
 

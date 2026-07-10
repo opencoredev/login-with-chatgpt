@@ -30,7 +30,7 @@ not a generic pass-through:
 | Guardrail | Default | Option |
 | --- | --- | --- |
 | Rate limit | 30 requests / 60s per session | `responsesProxy.rateLimit` (`false` to disable) |
-| Body size | 8 MiB | `responsesProxy.maxRequestBytes` |
+| Body size | 40 MiB | `responsesProxy.maxRequestBytes` |
 | Model allowlist | all models | `responsesProxy.allowedModels` (array or predicate) |
 | Cross-origin browser calls | same-origin only | `allowedOrigins` |
 | Default model injection | `gpt-5.5` when the body omits `model` | `defaultModel` |

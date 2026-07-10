@@ -37,7 +37,7 @@ session cookie gets `Secure`
 - Review the default rate limit (30 requests/minute per session) for your
   product. Pass a shared `rateLimit.store` when running multiple instances,
   because the default counter is per instance.
-- Keep `responsesProxy.maxRequestBytes` (8 MiB default) in line with the
+- Keep `responsesProxy.maxRequestBytes` (40 MiB default) in line with the
   attachments you accept, and cap prompt size and attachment types at your
   app boundary.
 - Add an operator kill switch in front of `/responses` for abuse

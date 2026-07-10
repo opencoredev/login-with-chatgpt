@@ -1,6 +1,7 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import { DEFAULT_MODEL, extractCodexModelSlugs, type FetchLike } from "@opencoredev/loginwithchatgpt-core";
 import type { ChatGPTProvider } from "./provider.ts";
+import { createChatGPTImagesClient } from "./images.ts";
 
 export interface CreateChatGPTProxyOptions {
   /**
@@ -54,10 +55,19 @@ export function createChatGPTProxyProvider(options: CreateChatGPTProxyOptions = 
     headers: options.headers,
   });
 
+  const images = createChatGPTImagesClient({
+    fetch: doFetch,
+    responsesUrl: `${basePath}/responses`,
+    defaultModel,
+    headers: options.headers,
+    credentials: options.credentials ?? "same-origin",
+  });
+
   const provider = ((modelId?: string) => openai.responses(modelId ?? defaultModel)) as ChatGPTProvider;
   Object.defineProperties(provider, {
     responses: { value: (modelId?: string) => openai.responses(modelId ?? defaultModel), enumerable: true },
     openai: { value: openai, enumerable: true },
+    images: { value: images, enumerable: true },
     listModels: {
       value: async () => {
         const response = await doFetch(`${basePath}/models`, {

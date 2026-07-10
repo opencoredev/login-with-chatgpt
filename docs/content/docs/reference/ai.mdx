@@ -22,13 +22,98 @@ const model = chatgpt("gpt-5.5");            // a responses model
 const same = chatgpt.responses("gpt-5.5");   // explicit accessor
 const model2 = chatgpt();                    // uses defaultModel ("gpt-5.5")
 const slugs = await chatgpt.listModels();    // string[]
+const generated = await chatgpt.images.generate({ prompt, model: slugs[0] });
+const edited = await chatgpt.images.edit({ prompt, images, model: slugs[0] });
 const openai = chatgpt.openai;               // underlying @ai-sdk/openai provider
 ```
 
 Models work with `streamText`, `generateText`, tool calling, and structured
-output, plus anything else the AI SDK responses model supports. For embeddings, images,
-audio, or stable OpenAI Platform semantics, use the official provider with
-your own API key instead.
+output, plus anything else the AI SDK responses model supports. The provider's
+`images` client generates and edits images through the signed-in user's
+ChatGPT plan. Embeddings and audio are not provided.
+
+## Images
+
+Both proxy and direct providers expose the same `chatgpt.images` client. It
+uses the existing `/responses` route, so it does not expose tokens or require
+an API key.
+
+Always discover a mainline model from the signed-in account first:
+
+```ts
+const models = await chatgpt.listModels();
+const model = models[0];
+if (!model) throw new Error("No ChatGPT models were returned for this account.");
+```
+
+### Generate
+
+```ts
+const result = await chatgpt.images.generate({
+  model,
+  prompt: "An editorial photograph of a cobalt chair in a sunlit concrete room",
+  size: "2048x2048",
+  quality: "high",
+  format: "webp",
+  compression: 80,
+  background: "opaque",
+  n: 2,
+  partialImages: 2,
+  onPartialImage(partial) {
+    preview.src = partial.dataUrl;
+  },
+});
+
+const first = result.data[0];
+first.base64;   // raw base64 bytes
+first.dataUrl;  // data:image/webp;base64,...
+first.mediaType;
+```
+
+### Edit
+
+Editing is stateless: the client sends every source image with the edit
+request. It accepts remote URLs, data URLs, raw base64, `Blob`, `ArrayBuffer`,
+and `Uint8Array` inputs.
+
+```ts
+const result = await chatgpt.images.edit({
+  model,
+  prompt: "Replace only the background with a warm plaster wall.",
+  images: [{ data: sourceBlob, detail: "high" }],
+  mask: { data: maskBytes, mediaType: "image/png" },
+  inputFidelity: "high",
+  size: "1536x1024",
+  quality: "high",
+  format: "png",
+});
+
+image.src = result.data[0].dataUrl;
+```
+
+### Image options
+
+| Option | Type | Notes |
+| --- | --- | --- |
+| `prompt` | `string` | Required generation or editing instruction. |
+| `model` | `string` | Mainline model returned by `listModels()`. |
+| `imageModel` | `string` | Optional GPT Image model override; otherwise the tool selects it. |
+| `size` | `"auto"` or dimensions | Popular sizes include `1024x1024`, `2048x2048`, and `3840x2160`. |
+| `quality` | `auto \| low \| medium \| high` | Rendering quality. |
+| `format` | `png \| jpeg \| webp` | Default `png`. |
+| `compression` | `0..100` | JPEG/WebP output compression. |
+| `background` | `auto \| opaque \| transparent` | Support depends on the selected image model. |
+| `n` | `1..10` | Runs independent image requests and returns all results in order. |
+| `partialImages` | `0..3` | Requests intermediate previews for each result. |
+| `onPartialImage` | callback | Receives base64, data URL, result index, and partial index. |
+| `signal` | `AbortSignal` | Cancels the request. |
+| `images` | `ChatGPTImageInput[]` | Required by `edit()`; multiple reference images are supported. |
+| `mask` | `ChatGPTImageInput` | Optional edit mask. |
+| `inputFidelity` | `low \| high` | Detail preservation for edits. |
+
+Raw base64 and byte inputs require an `image/*` `mediaType`. A `Blob` can use
+its own image MIME type. `ChatGPTImageError` exposes `status`, `code`, and
+`detail` when the upstream request fails.
 
 ## `createChatGPTProxyProvider(options?)`
 
@@ -134,5 +219,5 @@ const result = streamText({
 });
 ```
 
-The proxy's `maxRequestBytes` (8 MiB default) counts the full JSON body,
+The proxy's `maxRequestBytes` (40 MiB default) counts the full JSON body,
 including base64 file data.

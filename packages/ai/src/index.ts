@@ -14,4 +14,20 @@ export {
   type ChatGPTLanguageModel,
 } from "./provider.ts";
 export { ChatGPTProxyError, createChatGPTProxyProvider, type CreateChatGPTProxyOptions } from "./proxy.ts";
+export {
+  ChatGPTImageError,
+  type ChatGPTEditImageOptions,
+  type ChatGPTGenerateImageOptions,
+  type ChatGPTGeneratedImage,
+  type ChatGPTImageBackground,
+  type ChatGPTImageFormat,
+  type ChatGPTImageInput,
+  type ChatGPTImageInputFidelity,
+  type ChatGPTImageOptions,
+  type ChatGPTImageQuality,
+  type ChatGPTImageResult,
+  type ChatGPTImagesClient,
+  type ChatGPTImageSize,
+  type ChatGPTPartialImage,
+} from "./images.ts";
 export { type ChatGPTTokens, type ChatGPTConfig } from "@opencoredev/loginwithchatgpt-core";
