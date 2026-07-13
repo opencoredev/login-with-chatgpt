@@ -152,8 +152,13 @@ fun resolveTargetUrl(input: String, codexBaseUrl: String): String {
     if (pathname == "/v1") pathname = "/" else if (pathname.startsWith("/v1/")) pathname = pathname.substring(3)
     if (!pathname.startsWith("/")) pathname = "/$pathname"
 
-    val search = parsed.encodedQuery?.let { "?$it" } ?: ""
-    return "${base.scheme}://${base.host}$basePath$pathname$search"
+    // Rebuild via the base so scheme, host, AND port survive — string
+    // concatenation of scheme://host drops custom ports (TS uses `origin`).
+    return base.newBuilder()
+        .encodedPath("$basePath$pathname")
+        .encodedQuery(parsed.encodedQuery)
+        .build()
+        .toString()
 }
 
 /** Ensures the `client_version` query param is present (the model gate depends on it). */

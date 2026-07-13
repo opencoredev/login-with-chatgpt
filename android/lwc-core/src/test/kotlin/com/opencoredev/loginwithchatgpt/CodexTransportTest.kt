@@ -92,6 +92,15 @@ class CodexTransportTest {
     }
 
     @Test
+    fun `resolveTargetUrl preserves custom ports in overridden base URLs`() {
+        // e.g. the Android emulator's host loopback, or a local proxy
+        val base = "http://10.0.2.2:8080/backend-api/codex"
+        assertEquals("$base/responses", resolveTargetUrl("/responses", base))
+        assertEquals("$base/responses", resolveTargetUrl("https://api.openai.com/v1/responses", base))
+        assertEquals("$base/models?x=1", resolveTargetUrl("/models?x=1", base))
+    }
+
+    @Test
     fun `withClientVersion adds param when absent and preserves an explicit one`() {
         val base = "https://chatgpt.com/backend-api/codex/responses"
         assertTrue(withClientVersion(base, "0.142.5").contains("client_version=0.142.5"))
