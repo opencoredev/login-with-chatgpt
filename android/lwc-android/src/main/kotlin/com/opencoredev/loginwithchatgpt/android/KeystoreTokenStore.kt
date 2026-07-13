@@ -24,20 +24,29 @@ class KeystoreTokenStore(
     private val json = Json { ignoreUnknownKeys = true }
 
     private val prefs by lazy {
-        val masterKey = MasterKey.Builder(appContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            appContext,
-            fileName,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-        )
+        try {
+            createPrefs()
+        } catch (_: Exception) {
+            // The file exists but can't be decrypted — e.g. restored from a
+            // backup onto a device whose Keystore lacks the original master
+            // key. Wipe it and start clean (user re-authenticates) rather
+            // than crashing every launch.
+            appContext.deleteSharedPreferences(fileName)
+            createPrefs()
+        }
     }
 
+    private fun createPrefs() = EncryptedSharedPreferences.create(
+        appContext,
+        fileName,
+        MasterKey.Builder(appContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+    )
+
     override suspend fun load(): ChatGPTTokens? = withContext(Dispatchers.IO) {
-        prefs.getString(KEY, null)?.let { runCatching { json.decodeFromString<ChatGPTTokens>(it) }.getOrNull() }
+        runCatching { prefs.getString(KEY, null) }.getOrNull()
+            ?.let { runCatching { json.decodeFromString<ChatGPTTokens>(it) }.getOrNull() }
     }
 
     override suspend fun save(tokens: ChatGPTTokens): Unit = withContext(Dispatchers.IO) {
