@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose supplies the real theming; this platform theme just hosts the window. -->
+    <style name="Theme.LwcSample" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
