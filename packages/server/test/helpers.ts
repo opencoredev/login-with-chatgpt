@@ -42,6 +42,12 @@ export function createOpenAIMock(
         headers: { "content-type": "text/event-stream" },
       });
     }
+    if (new URL(url).pathname === "/realtime/vp" || new URL(url).pathname === "/realtime/vps") {
+      return new Response("v=0\r\no=- mock-answer", {
+        status: 201,
+        headers: { "content-type": "application/sdp" },
+      });
+    }
     throw new Error(`unexpected request: ${url}`);
   });
 }

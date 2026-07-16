@@ -6,11 +6,14 @@ import {
   type CodexResponsesOptions,
   type KeyValueStore,
   type LoginStatus,
+  type ChatGPTRealtimeSessionOptions,
+  type ChatGPTRealtimeVoiceMode,
   type ReasoningEffort,
   DEFAULT_MODEL,
   ChatGPTAuthError,
   MemoryStore,
   createCodexFetch,
+  createChatGPTRealtimeCall,
   listCodexModels,
   randomToken,
   resolveConfig,
@@ -25,6 +28,7 @@ const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_RESPONSES_BODY_BYTES = 40 * 1024 * 1024;
 const DEFAULT_RESPONSES_RATE_LIMIT = 30;
 const DEFAULT_RESPONSES_RATE_WINDOW_MS = 60 * 1000;
+const DEFAULT_MAX_REALTIME_BODY_BYTES = 256 * 1024;
 const SERVICE_TIER_HEADER = "x-login-with-chatgpt-service-tier";
 const REASONING_EFFORT_HEADER = "x-login-with-chatgpt-reasoning-effort";
 const SERVICE_TIERS = new Set<CodexServiceTier>(["auto", "default", "flex", "priority", "fast"]);
@@ -59,6 +63,15 @@ export interface ResponsesRateLimit {
   store?: KeyValueStore<RateLimitBucket>;
 }
 
+export interface RealtimeProxyPolicy {
+  /** Maximum JSON signaling request size. Defaults to 256 KiB. */
+  maxRequestBytes?: number;
+  /** Voice modes the browser may request. Defaults to both modes. */
+  allowedModes?: readonly ChatGPTRealtimeVoiceMode[];
+  /** Server defaults merged before browser session options. */
+  sessionDefaults?: ChatGPTRealtimeSessionOptions;
+}
+
 /** Fixed-window rate counter persisted per session id. */
 export interface RateLimitBucket {
   count: number;
@@ -86,6 +99,10 @@ export interface CreateChatGPTHandlerOptions extends ChatGPTConfig, CodexRespons
   defaultModel?: string;
   /** Set `false` to disable the built-in `/responses` proxy. Defaults to `true`. */
   enableResponsesProxy?: boolean;
+  /** Set `false` to disable the built-in `/realtime` signaling route. Defaults to `true`. */
+  enableRealtime?: boolean;
+  /** Guardrails and defaults for ChatGPT Realtime signaling. */
+  realtime?: RealtimeProxyPolicy;
   /** Guardrails for the built-in `/responses` proxy. */
   responsesProxy?: ResponsesProxyPolicy;
   /**
@@ -171,8 +188,11 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
   const secret = options.secret ?? createEphemeralSecret();
   const defaultModel = options.defaultModel ?? DEFAULT_MODEL;
   const enableResponsesProxy = options.enableResponsesProxy ?? true;
+  const enableRealtime = options.enableRealtime ?? true;
   const responsesProxy = options.responsesProxy ?? {};
+  const realtime = options.realtime ?? {};
   const maxResponsesBodyBytes = responsesProxy.maxRequestBytes ?? DEFAULT_MAX_RESPONSES_BODY_BYTES;
+  const maxRealtimeBodyBytes = realtime.maxRequestBytes ?? DEFAULT_MAX_REALTIME_BODY_BYTES;
 
   const allowedOrigins = new Set<string>();
   for (const origin of options.allowedOrigins ?? []) {
@@ -426,11 +446,53 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
     }
   }
 
+  async function handleRealtime(request: Request): Promise<Response> {
+    const sessionId = await readSessionId(request);
+    if (!sessionId) return json({ error: "not_authenticated" }, { status: 401 });
+    const tokens = await sessions.getFreshTokens(sessionId);
+    if (!tokens?.accessToken || !tokens.accountId) {
+      return json({ error: "not_authenticated" }, { status: 401 });
+    }
+
+    const payload = await prepareRealtimePayload(request, maxRealtimeBodyBytes);
+    if (payload instanceof Response) return payload;
+    const mode = payload.session?.voiceMode ?? realtime.sessionDefaults?.voiceMode ?? "advanced";
+    if (realtime.allowedModes && !realtime.allowedModes.includes(mode)) {
+      return json({ error: "realtime_mode_not_allowed", voiceMode: mode }, { status: 403 });
+    }
+
+    try {
+      const answer = await createChatGPTRealtimeCall({
+        config,
+        getAuth: () => ({ accessToken: tokens.accessToken, accountId: tokens.accountId as string }),
+        sdp: payload.sdp,
+        session: mergeRealtimeSessionOptions(realtime.sessionDefaults, payload.session),
+        signal: request.signal,
+      });
+      return new Response(answer, {
+        status: 201,
+        headers: { "content-type": "application/sdp", "cache-control": "no-store" },
+      });
+    } catch (error) {
+      if (error instanceof TypeError) {
+        return json({ error: "invalid_realtime_request", message: error.message }, { status: 400 });
+      }
+      if (error instanceof ChatGPTAuthError) {
+        return json(
+          { error: error.code, message: error.message, status: error.status, detail: error.body?.slice(0, 2000) },
+          { status: error.status ?? 502 },
+        );
+      }
+      throw error;
+    }
+  }
+
   const routes: Record<string, Partial<Record<string, (request: Request) => Promise<Response>>>> = {
     "/login": { POST: handleLogin },
     "/status": { GET: handleStatus },
     "/session": { GET: handleSession },
     "/logout": { POST: handleLogout },
+    ...(enableRealtime ? { "/realtime": { POST: handleRealtime } } : {}),
     ...(enableResponsesProxy ? { "/responses": { POST: handleResponses }, "/models": { GET: handleModels } } : {}),
   };
 
@@ -632,6 +694,62 @@ function isModelAllowed(model: string, allowedModels: ResponsesProxyPolicy["allo
   if (!allowedModels) return true;
   if (typeof allowedModels === "function") return allowedModels(model);
   return allowedModels.includes(model);
+}
+
+async function prepareRealtimePayload(
+  request: Request,
+  maxRequestBytes: number,
+): Promise<{ sdp: string; session?: ChatGPTRealtimeSessionOptions } | Response> {
+  const contentLength = request.headers.get("content-length");
+  if (contentLength && Number(contentLength) > maxRequestBytes) {
+    return json({ error: "realtime_request_too_large", maxRequestBytes }, { status: 413 });
+  }
+  const text = await request.text();
+  if (new TextEncoder().encode(text).byteLength > maxRequestBytes) {
+    return json({ error: "realtime_request_too_large", maxRequestBytes }, { status: 413 });
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!isRecord(parsed) || typeof parsed["sdp"] !== "string" || !parsed["sdp"].trim()) {
+      return json(
+        { error: "invalid_realtime_request", message: "Expected a non-empty `sdp` string." },
+        { status: 400 },
+      );
+    }
+    const rawSession = parsed["session"];
+    if (rawSession !== undefined && !isRecord(rawSession)) {
+      return json(
+        { error: "invalid_realtime_request", message: "`session` must be a JSON object." },
+        { status: 400 },
+      );
+    }
+    const mode = rawSession?.["voiceMode"];
+    if (mode !== undefined && mode !== "advanced" && mode !== "standard") {
+      return json(
+        { error: "invalid_realtime_request", message: "`session.voiceMode` must be `advanced` or `standard`." },
+        { status: 400 },
+      );
+    }
+    return {
+      sdp: parsed["sdp"],
+      session: rawSession as ChatGPTRealtimeSessionOptions | undefined,
+    };
+  } catch {
+    return json({ error: "invalid_realtime_request", message: "Expected a JSON object body." }, { status: 400 });
+  }
+}
+
+function mergeRealtimeSessionOptions(
+  defaults?: ChatGPTRealtimeSessionOptions,
+  requested?: ChatGPTRealtimeSessionOptions,
+): ChatGPTRealtimeSessionOptions | undefined {
+  if (!defaults) return requested;
+  if (!requested) return defaults;
+  return {
+    ...defaults,
+    ...requested,
+    extra: { ...(defaults.extra ?? {}), ...(requested.extra ?? {}) },
+  };
 }
 
 function originNotAllowed(origin: string): Response {

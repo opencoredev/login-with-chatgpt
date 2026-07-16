@@ -38,6 +38,7 @@ try {
 | `network_error` | The upstream request itself failed (DNS, timeout, offline). |
 | `models_request_failed` | `GET /models` upstream call failed. |
 | `responses_request_failed` | The proxied `/responses` upstream call failed. |
+| `realtime_request_failed` | Realtime signaling failed or returned a non-SDP body. |
 
 ## HTTP error shapes
 
@@ -46,14 +47,18 @@ Returned by the [handler routes](routes.mdx):
 | Status | Body | Route(s) |
 | --- | --- | --- |
 | `400` | `{ "error": "invalid_responses_request", "message": "…" }` | `/responses` |
+| `400` | `{ "error": "invalid_realtime_request", "message": "…" }` | `/realtime` |
 | `400` | `{ "error": "invalid_service_tier", "serviceTier": "…" }` or `{ "error": "invalid_reasoning_effort", "reasoningEffort": "…" }` | `/responses` |
-| `401` | `{ "error": "not_authenticated" }` | `/models`, `/responses` |
+| `401` | `{ "error": "not_authenticated" }` | `/models`, `/responses`, `/realtime` |
 | `403` | `{ "error": "model_not_allowed", "model": "…" }` | `/responses` |
+| `403` | `{ "error": "realtime_mode_not_allowed", "voiceMode": "…" }` | `/realtime` |
 | `403` | `{ "error": "origin_not_allowed", "origin": "…" }` | all non-GET routes |
 | `404` / `405` | plain text, `405` includes an `Allow` header | unknown path / wrong method |
 | `413` | `{ "error": "responses_request_too_large", "maxRequestBytes": … }` | `/responses` |
+| `413` | `{ "error": "realtime_request_too_large", "maxRequestBytes": … }` | `/realtime` |
 | `429` | `{ "error": "rate_limited", "retryAfterSeconds": … }` with a `retry-after` header | `/responses` |
 | upstream status | `{ "error": "responses_request_failed", "status": …, "detail": "…" }` | `/responses` |
+| upstream status / `502` | `{ "error": "realtime_request_failed", "status": …, "detail": "…" }` | `/realtime` |
 | upstream status or `502` | `{ "models": [], "error": "<code>", "message": "…" }` | `/models` |
 
 ## `ChatGPTProxyError`

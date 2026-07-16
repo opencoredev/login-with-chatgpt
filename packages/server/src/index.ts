@@ -17,6 +17,7 @@ export {
   type RateLimitBucket,
   type ResponsesProxyPolicy,
   type ResponsesRateLimit,
+  type RealtimeProxyPolicy,
 } from "./handler.ts";
 export {
   SessionManager,

@@ -3,6 +3,7 @@
   "icon": "Map",
   "pages": [
     "chat-app",
+    "realtime-voice",
     "custom-ui",
     "cross-origin",
     "fast-and-reasoning",

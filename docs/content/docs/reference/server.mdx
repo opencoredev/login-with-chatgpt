@@ -43,6 +43,8 @@ those APIs. The routes it serves are documented in [HTTP routes](routes.mdx).
 | `sessionTtlMs` | `number` | `2_592_000_000` (30 days) | Session and cookie lifetime. |
 | `defaultModel` | `string` | `"gpt-5.5"` | Injected when a `/responses` body omits `model`. |
 | `enableResponsesProxy` | `boolean` | `true` | `false` disables the `/responses` **and** `/models` routes. |
+| `enableRealtime` | `boolean` | `true` | `false` disables the `/realtime` signaling route. |
+| `realtime` | `RealtimeProxyPolicy` | `{}` | SDP size, allowed modes, and server session defaults. |
 | `responsesProxy` | `ResponsesProxyPolicy` | `{}` | Guardrails below. |
 | `allowedOrigins` | `readonly string[]` | `[]` | Extra origins allowed on cookie-authenticated non-GET routes. |
 | `dangerouslyAllowTokenExport` | `boolean` | `false` | Enables `dangerouslyGetTokens()` / deprecated `getTokens()`. Only use when your server code intentionally accepts custody of raw bearer tokens. |
@@ -55,6 +57,14 @@ those APIs. The routes it serves are documented in [HTTP routes](routes.mdx).
 | `allowedModels` | `readonly string[] \| (model: string) => boolean` | all allowed | Disallowed models get `403 model_not_allowed`. |
 | `maxRequestBytes` | `number` | `41_943_040` (40 MiB) | Maximum raw JSON body size, including base64 image-editing inputs. |
 | `rateLimit` | `false \| { limit?, windowMs?, store? }` | `{ limit: 30, windowMs: 60_000 }` | Per-session limit; `false` disables. Default store is per-instance memory; pass a shared `store` across instances. |
+
+### `realtime`
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `maxRequestBytes` | `number` | `262_144` | Maximum JSON SDP + session body. |
+| `allowedModes` | `readonly ("advanced" \| "standard")[]` | both | Disallowed requests get `403 realtime_mode_not_allowed`. |
+| `sessionDefaults` | `ChatGPTRealtimeSessionOptions` | `{}` | Defaults merged before browser options. Nested `extra` objects are merged. |
 
 ### Codex request defaults
 
@@ -73,7 +83,8 @@ Applied to proxied `/responses` bodies when the request does not set them
 
 Inherited from `ChatGPTConfig`. Override only when you know why
 ([core reference](core.mdx#chatgptconfig)): `clientId`, `issuer`, `scope`,
-`codexBaseUrl`, `originator`, `clientVersion`, `fetch`.
+`codexBaseUrl`, `realtimeBaseUrl`, Realtime client identifiers, `originator`,
+`clientVersion`, `fetch`.
 
 ## Helpers
 

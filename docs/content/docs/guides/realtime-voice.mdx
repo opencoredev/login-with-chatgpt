@@ -1,0 +1,250 @@
+---
+title: ChatGPT Realtime voice
+description: Low-latency speech-to-speech over WebRTC, with interruption, transcripts, captions, modes, and client-tool events.
+---
+
+The SDK can open the signed-in user's ChatGPT voice transport over WebRTC. Audio
+flows directly between the browser and the Realtime peer after a one-time SDP
+exchange through your backend. OAuth access and refresh tokens never enter
+browser JavaScript.
+
+<Callout type="warn" title="ChatGPT transport, not the public Realtime API">
+  This integration targets ChatGPT's subscription-backed web transport. Its
+  endpoints and data-channel schema are not a documented public OpenAI API and
+  can change independently. If your product uses an OpenAI API key, prefer the
+  official [`/v1/realtime/calls` WebRTC interface](https://developers.openai.com/api/docs/guides/realtime-webrtc)
+  instead.
+</Callout>
+
+## Start a call
+
+Mount `createChatGPTHandler()` as in the [quickstart](/docs/quickstart), then
+connect from a user gesture so the browser can grant microphone access and play
+audio:
+
+```bash
+bun add @opencoredev/loginwithchatgpt-core
+```
+
+```ts title="voice.ts"
+import { connectChatGPTRealtime } from "@opencoredev/loginwithchatgpt-core";
+
+const call = await connectChatGPTRealtime({
+  session: {
+    voice: "juniper",
+    voiceMode: "advanced",
+    language: "en-US",
+    clientTools: [
+      {
+        name: "open_panel",
+        description: "Open a named panel in the application UI.",
+        parameters: {
+          type: "object",
+          properties: { panel: { type: "string" } },
+          required: ["panel"],
+        },
+      },
+    ],
+  },
+  onStateChange: (state) => console.log(state),
+  onEvent: (event) => {
+    if (event.type === "user_transcription_text") console.log(event);
+    if (event.type === "client_tool_invoke") routeToolCall(event);
+  },
+});
+
+// Explicit controls are useful for buttons and push-to-talk.
+call.stopSpeaking();
+call.setInputMuted(true);
+call.setOutputMuted(false);
+
+// Always release the microphone, peer, data channel, and audio graph.
+call.close();
+```
+
+`connectChatGPTRealtime()` does the following:
+
+1. captures audio with echo cancellation, noise suppression, and automatic gain;
+2. creates a `max-bundle` WebRTC peer and negotiated data channel id `0`;
+3. posts the local SDP and session options to `/api/chatgpt/realtime`;
+4. applies the SDP answer, plays the remote audio track, and decodes events;
+5. monitors local voice activity while the model speaks and sends
+   `stop_speaking` for natural barge-in.
+
+Pass `bargeIn: false` to disable local interruption detection, or tune it:
+
+```ts
+bargeIn: { threshold: 0.045, holdMs: 120, cooldownMs: 800 }
+```
+
+You may supply `mediaStream`, `mediaConstraints`, `peerConnection`, or
+`audioElement` when your application owns those objects. A supplied stream is
+not stopped by `close()`; a stream created by the SDK is.
+
+## Connection API
+
+The resolved `ChatGPTRealtimeConnection` exposes:
+
+| Member | Purpose |
+| --- | --- |
+| `state` | Current `connecting`, `listening`, `thinking`, `speaking`, or other reported state. |
+| `peerConnection`, `dataChannel`, `mediaStream`, `audioElement` | Escape hatches for media/UI integration. |
+| `send(event)` | Send a forward-compatible raw protocol event. |
+| `action(name, payload?)` | Send an `action_request`. |
+| `startListening()`, `stopListening()`, `resumeListening()` | Listening controls. |
+| `stopSpeaking()` | Interrupt current model speech. |
+| `relayMessage(payload)` | Relay application context/message data. |
+| `setInputMuted(boolean)`, `setOutputMuted(boolean)` | Local media controls. |
+| `close()` | Idempotently release all SDK-owned resources. |
+
+For push-to-talk, disable automatic barge-in, call `startListening()` on press,
+and `stopListening()` on release. For a voice-driven UI, register
+`clientTools`, execute `client_tool_invoke` events in your application, and use
+`send()` for the matching result/update event. Keep destructive tool actions
+behind your own confirmation and authorization layer; a model request is not
+user authorization.
+
+The SDK intentionally has no separate "agent mode." The connection is always
+the native, full-duplex ChatGPT voice transport. Agent behavior belongs at the
+application layer: consume transcript/tool events, update your UI, and return
+tool results without replacing the live audio loop with turn-by-turn speech
+recognition and text-to-speech.
+
+To include camera video, request it in `mediaConstraints`; to send an existing
+camera or screen-share stream, pass `mediaStream`. Every track in that stream is
+added to the peer connection. When there is no video track, the helper adds the
+send-only video transceiver expected by the current ChatGPT transport.
+
+```ts
+await connectChatGPTRealtime({
+  mediaConstraints: { audio: true, video: { facingMode: "user" } },
+});
+```
+
+## Session schema
+
+The browser sends ergonomic camel-case `ChatGPTRealtimeSessionOptions`. The
+core package converts them into the upstream wire keys shown below.
+
+| SDK option | Upstream key | Default / behavior |
+| --- | --- | --- |
+| `voice` | `voice` | `"juniper"` |
+| `voiceMode` | `voice_mode` | `"advanced"`; `"standard"` is also supported |
+| `model` | `requested_default_model`, `model_slug` | `"gpt-4o"` |
+| `advancedModel` | `model_slug_advanced` | `model`; advanced mode only |
+| `language` | `language_code` | `null`; browser helper may pass locale |
+| `conversationId` | `conversation_id` | `null` for a new conversation |
+| `parentMessageId` | `parent_message_id` | omitted |
+| `timezone`, `timezoneOffsetMinutes` | `timezone`, `timezone_offset_min` | browser timezone; server fallback is UTC / `0` |
+| `clientTools` | `client_tools` | `[]` |
+| `conversationMode` | `conversation_mode` | `{ "kind": "primary_assistant" }` |
+| `historyAndTrainingDisabled` | `history_and_training_disabled` | `true` |
+| `enableMessageStreaming` | `enable_message_streaming` | `true` |
+| `modelSpeaksFirst` | `model_speaks_first` | omitted |
+| `reasoningEffort` | `backend_reasoning_effort` | omitted |
+| `thinkingEffort` | `thinking_effort` | omitted |
+| `chatRequestToken` | `chatreq_token` | omitted |
+| `bidiSystemPromptOverride` | `bidi_system_prompt_override` | object; omitted |
+| `structuredSystemPromptPersonalityOverride` | `structured_system_prompt_personality_override` | object; omitted |
+| `delegationTransportOverride` | `delegation_transport_override` | object; omitted |
+| `jobsMockInterviewConfig` | `jobs_mock_interview_config` | object; omitted |
+| `systemPromptType` | `system_prompt_type` | omitted |
+| `extra` | merged verbatim | Forward-compatibility escape hatch. |
+
+`voice_session_id` and `voice_status_request_id` are generated per call. Use
+`buildChatGPTRealtimeSession()` when you need the exact wire object without
+opening a connection.
+
+## HTTP endpoint
+
+`POST /api/chatgpt/realtime` is cookie-authenticated and protected by the same
+origin checks as `/responses`.
+
+```json title="request"
+{
+  "sdp": "v=0\r\n…",
+  "session": {
+    "voice": "juniper",
+    "voiceMode": "advanced",
+    "language": "en-US",
+    "clientTools": []
+  }
+}
+```
+
+A successful response is `201 application/sdp` containing the WebRTC answer.
+Errors are JSON:
+
+| Status | Error |
+| --- | --- |
+| `400` | `invalid_realtime_request` |
+| `401` | `not_authenticated` |
+| `403` | `origin_not_allowed` or `realtime_mode_not_allowed` |
+| `413` | `realtime_request_too_large` |
+| upstream / `502` | `realtime_request_failed` |
+
+Configure the route with:
+
+```ts
+createChatGPTHandler({
+  enableRealtime: true,
+  realtime: {
+    maxRequestBytes: 256 * 1024,
+    allowedModes: ["advanced"],
+    sessionDefaults: { historyAndTrainingDisabled: true },
+  },
+});
+```
+
+The handler converts the request to multipart `sdp` + `session` fields and
+posts to the selected ChatGPT endpoint:
+
+| Mode | Upstream signaling endpoint |
+| --- | --- |
+| `advanced` | `POST https://chatgpt.com/realtime/vp?dcid=0` |
+| `standard` | `POST https://chatgpt.com/realtime/vps?dcid=0` |
+
+The separate ChatGPT Wingman route is intentionally not exposed: Codex OAuth
+tokens do not currently authorize it, and it is not the voice-call protocol.
+
+## Data-channel schema
+
+Messages may arrive as a direct JSON event or in a nested
+`{ "type": "data_message", "data": "<json>" }` envelope. The parser accepts
+strings, `ArrayBuffer`, typed arrays, byte arrays, and numeric-key byte objects.
+Unknown event types pass through unchanged. Event-specific fields may be on the
+event or its `payload`; `getChatGPTRealtimePayload(event)` normalizes both forms.
+
+Observed event names exported in `CHATGPT_REALTIME_EVENT_TYPES`:
+
+| Area | Event types |
+| --- | --- |
+| State/control | `state_update`, `action_request`, `goodbye`, `close_request`, `close_ready`, `track_state`, `speaking_update` |
+| Conversation/streaming | `conversation_update`, `streaming_message_update`, `full_chat_message`, `chat_message_delta`, `relay_message`, `relay_message_processed`, `turn_context` |
+| Speech/text | `user_transcription_text`, `live_captioning_text` |
+| Tools/agents | `client_tool_invoke`, `client_tool_result`, `client_tool_update`, `tool_update`, `spawn_update` |
+| Settings/prompts | `update_settings_request`, `update_settings_result`, `get_bidi_system_prompt`, `bidi_system_prompt`, `client_metadata_update` |
+| Safety/usage/diagnostics | `moderation`, `url_moderation`, `bio_safety_review_update`, `usage_update`, `performance`, `startup_telemetry`, `client_metrics`, `wingman_session_debug`, `unknown` |
+
+Control messages use this shape:
+
+```json
+{
+  "type": "action_request",
+  "payload": { "action": "stop_speaking" }
+}
+```
+
+Known actions are `start_listening`, `stop_listening`, `stop_speaking`,
+`resume_listening`, and `relay_message`. Use
+`createChatGPTRealtimeAction()`, `encodeChatGPTRealtimeEvent()`, and
+`parseChatGPTRealtimeEvent()` for a custom transport.
+
+## Low-level server use
+
+Custom backends can call `createChatGPTRealtimeCall()` directly with a resolved
+config, an auth callback, SDP, and session options. This is a server-only
+primitive because `getAuth()` returns bearer material. Some runtime HTTP stacks
+may be challenged by ChatGPT's web edge; inject a compatible server-side
+`fetch` through `resolveConfig({ fetch })` when necessary. Never solve that by
+moving the ChatGPT access token into the browser.

@@ -20,6 +20,13 @@ export const DEFAULT_SCOPE = "openid profile email offline_access";
 /** Base URL of the ChatGPT-backed Codex model API. */
 export const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
+/** ChatGPT web origin used for subscription-backed Realtime signaling. */
+export const DEFAULT_REALTIME_BASE_URL = "https://chatgpt.com";
+
+/** Current ChatGPT web client identifiers used by the Realtime edge. */
+export const DEFAULT_REALTIME_CLIENT_VERSION = "prod-2ea58bfbafa38fd41bda1cca6fd016e28a1d2746";
+export const DEFAULT_REALTIME_CLIENT_BUILD = "8329425";
+
 /** `originator` header/param value that identifies the client to OpenAI. */
 export const DEFAULT_ORIGINATOR = "codex_cli_rs";
 

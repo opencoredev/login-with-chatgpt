@@ -93,9 +93,33 @@ When a `fast` service tier is rejected upstream, the handler retries once
 without it and adds `x-login-with-chatgpt-service-tier-fallback: auto` to the
 response.
 
+## `POST /realtime`
+
+Exchanges a browser WebRTC offer for an SDP answer using the authenticated
+ChatGPT session. The OAuth token remains server-side. The request is JSON:
+
+```json
+{
+  "sdp": "v=0\r\n…",
+  "session": { "voice": "juniper", "voiceMode": "advanced" }
+}
+```
+
+Success is `201 application/sdp`. `session` accepts the complete schema in
+[ChatGPT Realtime voice](/docs/guides/realtime-voice#session-schema).
+
+| Status | Body / behavior |
+| --- | --- |
+| `201` | WebRTC answer SDP. |
+| `400` | `invalid_realtime_request`. |
+| `401` | `not_authenticated`. |
+| `403` | `realtime_mode_not_allowed` or `origin_not_allowed`. |
+| `413` | `realtime_request_too_large`. |
+| upstream / `502` | `realtime_request_failed`, with bounded upstream detail. |
+
 ## CSRF rules
 
-All non-GET routes (`/login`, `/logout`, `/responses`) check the `Origin`
+All non-GET routes (`/login`, `/logout`, `/responses`, `/realtime`) check the `Origin`
 header on browser requests:
 
 - Same-origin requests and origins listed in `allowedOrigins` pass.

@@ -12,6 +12,7 @@
 - Tokens never touch the browser: HttpOnly cookie only
 - Works with the Vercel AI SDK: `streamText()` straight from the client
 - Generates and edits images with size, quality, format, masks, and streaming previews
+- Runs low-latency ChatGPT Realtime voice over WebRTC, with barge-in and client-tool events
 - Open source, MIT licensed
 
 The handler keeps tokens behind the proxy path by default. The browser gets a session cookie, asks your backend which models the account has, and streams from there.
@@ -19,7 +20,7 @@ The handler keeps tokens behind the proxy path by default. The browser gets a se
 ## Install
 
 ```bash
-bun add @opencoredev/loginwithchatgpt-server @opencoredev/loginwithchatgpt-react @opencoredev/loginwithchatgpt-ai
+bun add @opencoredev/loginwithchatgpt-core @opencoredev/loginwithchatgpt-server @opencoredev/loginwithchatgpt-react @opencoredev/loginwithchatgpt-ai
 ```
 
 npm and pnpm work too. Everything ships as ESM with types for Node 18+.
@@ -28,14 +29,17 @@ npm and pnpm work too. Everything ships as ESM with types for Node 18+.
 
 | Package | Does |
 | --- | --- |
-| `@opencoredev/loginwithchatgpt-core` | OAuth, token refresh, model discovery |
-| `@opencoredev/loginwithchatgpt-server` | Backend handler: login, session, logout, models, responses proxy |
+| `@opencoredev/loginwithchatgpt-core` | OAuth, token refresh, model discovery, Realtime protocol + browser client |
+| `@opencoredev/loginwithchatgpt-server` | Backend handler: login, session, models, responses and Realtime signaling |
 | `@opencoredev/loginwithchatgpt-react` | The `<LoginWithChatGPT />` button and hook |
 | `@opencoredev/loginwithchatgpt-ai` | Vercel AI SDK providers |
 
 ## Docs
 
 Start with the [quickstart](./docs/content/docs/quickstart.mdx). The [security model](./docs/content/docs/concepts/security.mdx) explains how tokens stay on your server, and the [production checklist](./docs/content/docs/guides/production.mdx) is there for when you deploy.
+
+For speech-to-speech, interruption, captions, and client tools, see
+[ChatGPT Realtime voice](./docs/content/docs/guides/realtime-voice.mdx).
 
 ## Agent skill
 

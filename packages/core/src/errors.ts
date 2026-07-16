@@ -13,7 +13,8 @@ export type ChatGPTAuthErrorCode =
   | "refresh_token_export_disabled"
   | "network_error"
   | "models_request_failed"
-  | "responses_request_failed";
+  | "responses_request_failed"
+  | "realtime_request_failed";
 
 /**
  * Error raised by every auth/transport operation in this package. Carries a

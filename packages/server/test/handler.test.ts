@@ -73,6 +73,39 @@ describe("createChatGPTHandler", () => {
     expect(await responses.text()).toContain("response.output_text.delta");
   });
 
+  test("exchanges Realtime SDP without exposing ChatGPT tokens", async () => {
+    let clock = 1000;
+    const fetch = createOpenAIMock({ pollsUntilAuthorized: 1 });
+    const handler = createChatGPTHandler({ fetch, secret: "test-secret", now: () => clock });
+    const login = await handler.handler(new Request(`${BASE}/login`, { method: "POST" }));
+    const cookie = cookieFrom(login);
+    clock += 2000;
+    await handler.handler(new Request(`${BASE}/status`, { headers: { cookie } }));
+
+    const realtime = await handler.handler(new Request(`${BASE}/realtime`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        sdp: "v=0\r\no=- browser-offer",
+        session: { voice: "juniper", voiceMode: "advanced", clientTools: [{ name: "open_panel" }] },
+      }),
+    }));
+    expect(realtime.status).toBe(201);
+    expect(realtime.headers.get("content-type")).toContain("application/sdp");
+    expect(await realtime.text()).toStartWith("v=0");
+
+    const call = fetch.calls.find((entry) => new URL(entry.url).pathname === "/realtime/vp");
+    expect(call).toBeDefined();
+    const headers = new Headers(call?.init?.headers);
+    expect(headers.get("authorization")).toStartWith("Bearer ");
+    const form = call?.init?.body as FormData;
+    expect(JSON.parse(String(form.get("session")))).toMatchObject({
+      voice: "juniper",
+      voice_mode: "advanced",
+      client_tools: [{ name: "open_panel" }],
+    });
+  });
+
   test("enforces responses proxy model allowlist", async () => {
     let clock = 1000;
     const handler = createChatGPTHandler({
