@@ -45,7 +45,11 @@ describe("ChatGPT Realtime", () => {
     const config = resolveConfig({ fetch });
     const answer = await createChatGPTRealtimeCall({
       config,
-      getAuth: () => ({ accessToken: "access-secret", accountId: "acct_123" }),
+      getAuth: () => ({
+        accessToken: "access-secret",
+        accountId: "acct_123",
+        deviceId: "8aacad9c-15c9-4d87-9516-855d3d223bf8",
+      }),
       sdp: "v=0\r\no=- offer",
       session: { voice: "juniper", transport: "wm" },
     });
@@ -57,6 +61,7 @@ describe("ChatGPT Realtime", () => {
     const headers = new Headers(call.init?.headers);
     expect(headers.get("authorization")).toBe("Bearer access-secret");
     expect(headers.get("chatgpt-account-id")).toBe("acct_123");
+    expect(headers.get("oai-device-id")).toBe("8aacad9c-15c9-4d87-9516-855d3d223bf8");
     expect(headers.has("openai-beta")).toBeFalse();
     const form = call.init?.body as FormData;
     expect(form.get("sdp")).toBe("v=0\r\no=- offer");
@@ -69,23 +74,62 @@ describe("ChatGPT Realtime", () => {
 
   test("mints and validates the web-client auth required by /wm", async () => {
     const accessToken = makeJwt({ client_id: "app_X8zY6vW2pQ9tR3dE7nK1jL5gH" });
-    const fetch = createMockFetch(() => new Response(JSON.stringify({
-      accessToken,
-      account: { id: "acct_web" },
-      user: { email: "person@example.com" },
-      expires: "2030-01-01T00:00:00.000Z",
-    }), { headers: { "content-type": "application/json" } }));
+    const responseHeaders = new Headers({ "content-type": "application/json" });
+    responseHeaders.append("set-cookie", "__Secure-next-auth.session-token=; Max-Age=0; Secure");
+    responseHeaders.append("set-cookie", "__Secure-next-auth.session-token.0=chunk-zero; Secure; HttpOnly");
+    responseHeaders.append("set-cookie", "__Secure-next-auth.session-token.1=chunk-one; Secure; HttpOnly");
+    const fetch = createMockFetch(() => new Response(
+      JSON.stringify({
+        accessToken,
+        account: { id: "acct_web" },
+        user: { email: "person@example.com" },
+        expires: "2030-01-01T00:00:00.000Z",
+      }),
+      { headers: responseHeaders },
+    ));
+    let updated: unknown;
     const auth = await exchangeChatGPTRealtimeWebSession({
       config: resolveConfig({ fetch }),
       sessionToken: "opaque-session-secret",
+      deviceId: "8aacad9c-15c9-4d87-9516-855d3d223bf8",
+      onSessionUpdate: (state) => {
+        updated = state;
+      },
     });
     expect(auth).toMatchObject({
       accessToken,
       accountId: "acct_web",
       email: "person@example.com",
+      deviceId: "8aacad9c-15c9-4d87-9516-855d3d223bf8",
+      sessionCookies: {
+        "__Secure-next-auth.session-token.0": "chunk-zero",
+        "__Secure-next-auth.session-token.1": "chunk-one",
+      },
+    });
+    expect(updated).toEqual({
+      deviceId: auth.deviceId,
+      sessionCookies: auth.sessionCookies,
     });
     const headers = new Headers(fetch.calls[0]?.init?.headers);
-    expect(headers.get("cookie")).toBe("__Secure-next-auth.session-token=opaque-session-secret");
+    expect(headers.get("cookie")).toBe(
+      "__Secure-next-auth.session-token=opaque-session-secret; oai-did=8aacad9c-15c9-4d87-9516-855d3d223bf8",
+    );
+    expect(headers.get("oai-device-id")).toBe("8aacad9c-15c9-4d87-9516-855d3d223bf8");
+  });
+
+  test("distinguishes a ChatGPT edge rejection from an expired web session", async () => {
+    const fetch = createMockFetch(() => new Response("challenge", { status: 403 }));
+
+    expect(
+      exchangeChatGPTRealtimeWebSession({
+        config: resolveConfig({ fetch }),
+        sessionToken: "opaque-session-secret",
+        deviceId: "8aacad9c-15c9-4d87-9516-855d3d223bf8",
+      }),
+    ).rejects.toMatchObject({
+      code: "realtime_web_edge_rejected",
+      status: 502,
+    });
   });
 
   test("decodes direct, nested, byte, and numeric-key events", () => {

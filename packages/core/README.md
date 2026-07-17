@@ -56,7 +56,8 @@ ChatGPT credentials remain in the server handler.
 GPT Live `/wm` requires a separate ChatGPT web-client credential; the Codex
 device-login token does not authorize it. Keep that session encrypted and
 server-side, mint short-lived auth with `exchangeChatGPTRealtimeWebSession()`,
-and provide it through the server package's `realtime.getAuth` callback.
+persist its returned stable device id and rotated cookie chunks, and provide the
+result through the server package's `realtime.getAuth` callback.
 
 See the [Realtime voice guide](../../docs/content/docs/guides/realtime-voice.mdx)
 for session options, event names, client tools, and low-level primitives.

@@ -37,9 +37,15 @@ const auth = createChatGPTHandler({
     async getAuth({ request }) {
       const appUser = await requireAppUser(request);
       const encrypted = await loadUserRealtimeSession(appUser.id);
+      const stored = await decrypt(encrypted);
       const live = await exchangeChatGPTRealtimeWebSession({
         config,
-        sessionToken: await decrypt(encrypted),
+        sessionToken: stored.sessionToken,
+        deviceId: stored.deviceId,
+        sessionCookies: stored.sessionCookies,
+        onSessionUpdate: async (next) => {
+          await saveUserRealtimeSession(appUser.id, await encrypt({ ...stored, ...next }));
+        },
       });
       if (live.email.toLowerCase() !== appUser.email.toLowerCase()) {
         throw new Error("ChatGPT Live identity does not match the app user");
@@ -287,3 +293,8 @@ moving the ChatGPT access token into the browser.
 The web-session credential is longer-lived and more sensitive than the minted
 access token. Encrypt it at rest, bind it to the application's user identity,
 never log it, and never put it in local storage or a client-readable cookie.
+ChatGPT's web edge also requires a stable `oai-did` device identity and can
+rotate its NextAuth session into numbered cookie chunks. Persist the
+`deviceId` and `sessionCookies` delivered to `onSessionUpdate`; serialize
+concurrent exchanges for one user so two requests cannot race that rotation.
+The helper distinguishes a true 401 expiry from a retryable 403 edge rejection.

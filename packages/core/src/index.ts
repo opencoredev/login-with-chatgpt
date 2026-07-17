@@ -68,6 +68,7 @@ export {
   type ChatGPTRealtimeSessionOptions,
   type ChatGPTRealtimeTransport,
   type ChatGPTRealtimeWebAuth,
+  type ChatGPTRealtimeWebSessionState,
   type ExchangeChatGPTRealtimeWebSessionOptions,
   type ChatGPTRealtimeState,
   type ChatGPTRealtimeStateEvent,

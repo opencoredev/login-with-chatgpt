@@ -61,6 +61,8 @@ const proxyFetch = auth.proxyFetch(request);
   material to the browser.
 - GPT Live auth is supplied by `realtime.getAuth`; web-session credentials must
   remain encrypted, server-side, and bound to the application's user identity.
+  Persist the stable device id and rotated session-cookie chunks returned by the
+  core exchange helper, and serialize refreshes per user.
 - Raw token export is disabled by default. `dangerouslyGetTokens()` requires
   `dangerouslyAllowTokenExport: true`; refresh-token export additionally
   requires `dangerouslyAllowRefreshTokenExport: true`.

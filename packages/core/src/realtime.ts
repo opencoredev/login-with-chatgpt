@@ -79,16 +79,32 @@ export interface ChatGPTRealtimeAuth {
   /** Must be minted for the ChatGPT web client when using `/wm`. */
   accessToken: string;
   accountId?: string;
+  /** Stable ChatGPT web device identity used for auth exchange and signaling. */
+  deviceId?: string;
+}
+
+export interface ChatGPTRealtimeWebSessionState {
+  deviceId: string;
+  /** Rotated NextAuth cookie chunks. Encrypt these at rest. */
+  sessionCookies: Record<string, string>;
 }
 
 export interface ExchangeChatGPTRealtimeWebSessionOptions {
   config: ResolvedConfig;
   /** Opaque ChatGPT web session credential. Keep server-side and encrypted at rest. */
   sessionToken: string;
+  /** Reuse the device id returned by the previous exchange. */
+  deviceId?: string;
+  /** Rotated cookie chunks returned by the previous exchange; takes precedence over `sessionToken`. */
+  sessionCookies?: Readonly<Record<string, string>>;
+  /** Persist rotated cookies and device identity in the application's encrypted user store. */
+  onSessionUpdate?: (state: ChatGPTRealtimeWebSessionState) => Promise<void> | void;
   signal?: AbortSignal;
 }
 
 export interface ChatGPTRealtimeWebAuth extends ChatGPTRealtimeAuth {
+  deviceId: string;
+  sessionCookies: Record<string, string>;
   email: string;
   expiresAt?: string;
 }
@@ -101,16 +117,30 @@ export interface ChatGPTRealtimeWebAuth extends ChatGPTRealtimeAuth {
 export async function exchangeChatGPTRealtimeWebSession(
   options: ExchangeChatGPTRealtimeWebSessionOptions,
 ): Promise<ChatGPTRealtimeWebAuth> {
-  if (!options.sessionToken.trim()) throw new TypeError("`sessionToken` must be non-empty.");
+  const sessionCookies = normalizeRealtimeSessionCookies(options.sessionToken, options.sessionCookies);
+  const deviceId = options.deviceId?.trim() || createUuid();
   const response = await options.config.fetch(`${options.config.realtimeBaseUrl}/api/auth/session`, {
     method: "GET",
     headers: {
       accept: "application/json",
-      cookie: `__Secure-next-auth.session-token=${options.sessionToken}`,
+      cookie: [
+        ...Object.entries(sessionCookies).map(([name, value]) => `${name}=${value}`),
+        `oai-did=${deviceId}`,
+      ].join("; "),
+      "oai-device-id": deviceId,
+      origin: options.config.realtimeBaseUrl,
+      referer: `${options.config.realtimeBaseUrl}/`,
     },
     signal: options.signal,
   });
   const body = await response.json().catch(() => undefined) as Record<string, unknown> | undefined;
+  if (response.status === 403) {
+    throw new ChatGPTAuthError(
+      "realtime_web_edge_rejected",
+      "ChatGPT rejected the GPT Live web session at its edge; retry the request.",
+      { status: 502 },
+    );
+  }
   const accessToken = typeof body?.["accessToken"] === "string" ? body["accessToken"] : undefined;
   const account = isRecord(body?.["account"]) ? body["account"] : undefined;
   const user = isRecord(body?.["user"]) ? body["user"] : undefined;
@@ -124,11 +154,16 @@ export async function exchangeChatGPTRealtimeWebSession(
       { status: response.status || 401 },
     );
   }
+  const rotatedCookies = readRotatedRealtimeSessionCookies(response.headers) ?? { ...sessionCookies };
+  const state = { deviceId, sessionCookies: rotatedCookies };
+  await options.onSessionUpdate?.(state);
   return {
     accessToken,
     accountId,
+    deviceId,
     email,
     expiresAt: typeof body?.["expires"] === "string" ? body["expires"] : undefined,
+    sessionCookies: rotatedCookies,
   };
 }
 
@@ -283,7 +318,7 @@ export async function createChatGPTRealtimeCall(
   if (auth.accountId) headers.set("chatgpt-account-id", auth.accountId);
   headers.set("Accept", "application/sdp");
   headers.set("OAI-Language", options.session?.language ?? "en-US");
-  headers.set("OAI-Device-Id", createUuid());
+  headers.set("OAI-Device-Id", auth.deviceId ?? createUuid());
   headers.set("OAI-Client-Version", options.config.realtimeClientVersion);
   headers.set("OAI-Client-Build-Number", options.config.realtimeClientBuild);
   headers.set("OAI-Session-Id", createUuid());
@@ -417,6 +452,46 @@ function assignDefined(target: Record<string, unknown>, key: string, value: unkn
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const REALTIME_SESSION_COOKIE = "__Secure-next-auth.session-token";
+
+function normalizeRealtimeSessionCookies(
+  sessionToken: string,
+  cookies?: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const values = cookies && Object.keys(cookies).length > 0
+    ? { ...cookies }
+    : { [REALTIME_SESSION_COOKIE]: sessionToken };
+  if (Object.keys(values).length > 8) throw new TypeError("Too many ChatGPT Realtime session cookie chunks.");
+  for (const [name, value] of Object.entries(values)) {
+    const suffix = name.startsWith(`${REALTIME_SESSION_COOKIE}.`)
+      ? name.slice(REALTIME_SESSION_COOKIE.length + 1)
+      : undefined;
+    if (
+      (name !== REALTIME_SESSION_COOKIE && !/^\d+$/.test(suffix ?? ""))
+      || !value
+      || /[;\r\n]/.test(value)
+    ) {
+      throw new TypeError("Invalid ChatGPT Realtime session cookies.");
+    }
+  }
+  return values;
+}
+
+function readRotatedRealtimeSessionCookies(headers: Headers): Record<string, string> | undefined {
+  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  const lines = getSetCookie?.call(headers) ?? [headers.get("set-cookie") ?? ""];
+  const values: Record<string, string> = {};
+  const pattern = /(?:^|,\s*)(__Secure-next-auth\.session-token(?:\.\d+)?)=([^;,]*)/g;
+  for (const line of lines) {
+    for (const match of line.matchAll(pattern)) {
+      if (match[1] && match[2]) values[match[1]] = match[2];
+    }
+  }
+  const chunks = Object.fromEntries(Object.entries(values).filter(([name]) => name !== REALTIME_SESSION_COOKIE));
+  if (Object.keys(chunks).length > 0) return chunks;
+  return values[REALTIME_SESSION_COOKIE] ? { [REALTIME_SESSION_COOKIE]: values[REALTIME_SESSION_COOKIE] } : undefined;
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
