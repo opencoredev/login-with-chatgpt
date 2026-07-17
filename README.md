@@ -12,7 +12,7 @@
 - Tokens never touch the browser: HttpOnly cookie only
 - Works with the Vercel AI SDK: `streamText()` straight from the client
 - Generates and edits images with size, quality, format, masks, and streaming previews
-- Runs low-latency ChatGPT Realtime voice over WebRTC, with barge-in and client-tool events
+- Runs native GPT Live `/wm` audio over WebRTC, with barge-in and structured external-tool relays
 - Open source, MIT licensed
 
 The handler keeps tokens behind the proxy path by default. The browser gets a session cookie, asks your backend which models the account has, and streams from there.

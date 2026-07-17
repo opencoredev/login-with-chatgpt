@@ -1,6 +1,8 @@
 import type { FetchLike } from "./types.ts";
 import {
   createChatGPTRealtimeAction,
+  createChatGPTRealtimeRelayMessage,
+  createChatGPTRealtimeToolResult,
   encodeChatGPTRealtimeEvent,
   getChatGPTRealtimePayload,
   parseChatGPTRealtimeEvent,
@@ -53,7 +55,10 @@ export interface ChatGPTRealtimeConnection {
   stopListening(): void;
   stopSpeaking(): void;
   resumeListening(): void;
-  relayMessage(payload: Record<string, unknown>): void;
+  /** Injects a typed user message into the native GPT Live conversation. */
+  relayMessage(text: string, metadata?: Record<string, unknown>): void;
+  /** Returns a structured external-tool result without replacing native audio. */
+  relayToolResult(callId: string, result: Record<string, unknown>): void;
   setInputMuted(muted: boolean): void;
   setOutputMuted(muted: boolean): void;
   close(): void;
@@ -198,7 +203,8 @@ export async function connectChatGPTRealtime(
     stopListening: () => action("stop_listening"),
     stopSpeaking: () => action("stop_speaking"),
     resumeListening: () => action("resume_listening"),
-    relayMessage: (payload) => action("relay_message", payload),
+    relayMessage: (text, metadata) => send(createChatGPTRealtimeRelayMessage(text, metadata)),
+    relayToolResult: (callId, result) => send(createChatGPTRealtimeToolResult(callId, result)),
     setInputMuted: (muted) => stream.getAudioTracks().forEach((track) => { track.enabled = !muted; }),
     setOutputMuted: (muted) => { outputMuted = muted; audio.muted = muted; },
     close: () => {

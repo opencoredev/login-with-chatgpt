@@ -39,7 +39,7 @@ const models = await listCodexModels({
 | Tokens | `ensureFreshTokens`, `isAccessTokenExpired`, `refreshTokens` |
 | Identity | `parseUser`, `deriveAccountId`, `decodeJwt`, `getTokenExpiry` |
 | Transport | `createCodexFetch`, `normalizeResponsesBody`, `listCodexModels`, `extractCodexModelSlugs` |
-| Realtime | `connectChatGPTRealtime`, `createChatGPTRealtimeCall`, session/event/action helpers |
+| Realtime | `connectChatGPTRealtime`, `createChatGPTRealtimeCall`, `exchangeChatGPTRealtimeWebSession`, relay/result helpers |
 | Storage | `KeyValueStore`, `MemoryStore` |
 | Config/errors | `resolveConfig`, `ChatGPTConfig`, `ChatGPTAuthError` |
 
@@ -52,6 +52,11 @@ server package's `/realtime` route. It creates a WebRTC peer, captures the
 microphone, plays remote audio, decodes data-channel events, and enables local
 voice-activity barge-in by default. The browser receives only an SDP answer;
 ChatGPT credentials remain in the server handler.
+
+GPT Live `/wm` requires a separate ChatGPT web-client credential; the Codex
+device-login token does not authorize it. Keep that session encrypted and
+server-side, mint short-lived auth with `exchangeChatGPTRealtimeWebSession()`,
+and provide it through the server package's `realtime.getAuth` callback.
 
 See the [Realtime voice guide](../../docs/content/docs/guides/realtime-voice.mdx)
 for session options, event names, client tools, and low-level primitives.

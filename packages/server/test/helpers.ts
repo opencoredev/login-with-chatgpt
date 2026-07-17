@@ -42,7 +42,7 @@ export function createOpenAIMock(
         headers: { "content-type": "text/event-stream" },
       });
     }
-    if (new URL(url).pathname === "/realtime/vp" || new URL(url).pathname === "/realtime/vps") {
+    if (["/realtime/wm", "/realtime/vp", "/realtime/vps"].includes(new URL(url).pathname)) {
       return new Response("v=0\r\no=- mock-answer", {
         status: 201,
         headers: { "content-type": "application/sdp" },

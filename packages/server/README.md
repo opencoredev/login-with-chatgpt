@@ -16,6 +16,12 @@ const auth = createChatGPTHandler({
     allowedModels: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"],
     maxRequestBytes: 40 * 1024 * 1024,
   },
+  realtime: {
+    // Resolve from an encrypted, user-bound ChatGPT web session. The normal
+    // Codex login token is not accepted by GPT Live `/realtime/wm`.
+    getAuth: async ({ request }) => getChatGPTLiveAuth(request),
+    sessionDefaults: { transport: "wm", historyAndTrainingDisabled: false },
+  },
 });
 
 Bun.serve({
@@ -53,6 +59,8 @@ const proxyFetch = auth.proxyFetch(request);
   raw bearer tokens stay inside the handler.
 - `/realtime` accepts only session options and SDP; it never returns OAuth
   material to the browser.
+- GPT Live auth is supplied by `realtime.getAuth`; web-session credentials must
+  remain encrypted, server-side, and bound to the application's user identity.
 - Raw token export is disabled by default. `dangerouslyGetTokens()` requires
   `dangerouslyAllowTokenExport: true`; refresh-token export additionally
   requires `dangerouslyAllowRefreshTokenExport: true`.

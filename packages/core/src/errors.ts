@@ -14,6 +14,7 @@ export type ChatGPTAuthErrorCode =
   | "network_error"
   | "models_request_failed"
   | "responses_request_failed"
+  | "realtime_web_session_invalid"
   | "realtime_request_failed";
 
 /**

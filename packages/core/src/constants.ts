@@ -24,8 +24,10 @@ export const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 export const DEFAULT_REALTIME_BASE_URL = "https://chatgpt.com";
 
 /** Current ChatGPT web client identifiers used by the Realtime edge. */
-export const DEFAULT_REALTIME_CLIENT_VERSION = "prod-2ea58bfbafa38fd41bda1cca6fd016e28a1d2746";
-export const DEFAULT_REALTIME_CLIENT_BUILD = "8329425";
+export const DEFAULT_REALTIME_CLIENT_VERSION = "prod-e8f67765f24e1c6773b4b61b4310d5ff9297439a";
+export const DEFAULT_REALTIME_CLIENT_BUILD = "8338682";
+/** OAuth client id carried by access tokens minted from a ChatGPT web session. */
+export const DEFAULT_REALTIME_WEB_CLIENT_ID = "app_X8zY6vW2pQ9tR3dE7nK1jL5gH";
 
 /** `originator` header/param value that identifies the client to OpenAI. */
 export const DEFAULT_ORIGINATOR = "codex_cli_rs";

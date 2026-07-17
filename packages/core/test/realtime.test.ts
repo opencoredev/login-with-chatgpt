@@ -2,38 +2,42 @@ import { describe, expect, test } from "bun:test";
 import {
   buildChatGPTRealtimeSession,
   createChatGPTRealtimeAction,
+  createChatGPTRealtimeRelayMessage,
+  createChatGPTRealtimeToolResult,
   createChatGPTRealtimeCall,
+  encodeChatGPTRealtimeEvent,
+  exchangeChatGPTRealtimeWebSession,
   getChatGPTRealtimePayload,
   parseChatGPTRealtimeEvent,
   resolveConfig,
 } from "../src/index.ts";
-import { createMockFetch } from "./helpers.ts";
+import { createMockFetch, makeJwt } from "./helpers.ts";
 
 describe("ChatGPT Realtime", () => {
   test("builds advanced and standard session payloads", () => {
     const advanced = buildChatGPTRealtimeSession({
       voice: "ember",
       language: "fr-FR",
-      clientTools: [{ name: "open_panel", parameters: { type: "object" } }],
+      clientTools: [{ id: "timer" }],
       modelSpeaksFirst: true,
     });
     expect(advanced).toMatchObject({
       voice: "ember",
-      voice_mode: "advanced",
-      model_slug: "gpt-4o",
-      model_slug_advanced: "gpt-4o",
+      voice_mode: "wingman",
+      model_slug: "",
       language_code: "fr-FR",
       model_speaks_first: true,
     });
     expect(advanced.voice_session_id).toBe(advanced.voice_status_request_id);
     expect(advanced.client_tools).toHaveLength(1);
 
-    const standard = buildChatGPTRealtimeSession({ voiceMode: "standard", model: "gpt-4o-mini" });
+    const standard = buildChatGPTRealtimeSession({ transport: "vps", voiceMode: "standard", model: "gpt-4o-mini" });
     expect(standard.voice_mode).toBe("standard");
     expect(standard.model_slug).toBe("gpt-4o-mini");
     expect(standard.model_slug_advanced).toBeUndefined();
     expect(() => buildChatGPTRealtimeSession({ voice: "" })).toThrow("`voice`");
     expect(() => buildChatGPTRealtimeSession({ timezoneOffsetMinutes: 2000 })).toThrow("timezoneOffsetMinutes");
+    expect(() => buildChatGPTRealtimeSession({ historyAndTrainingDisabled: true })).toThrow("must be false");
   });
 
   test("posts multipart SDP with server-side ChatGPT auth", async () => {
@@ -43,20 +47,45 @@ describe("ChatGPT Realtime", () => {
       config,
       getAuth: () => ({ accessToken: "access-secret", accountId: "acct_123" }),
       sdp: "v=0\r\no=- offer",
-      session: { voice: "juniper", voiceMode: "advanced" },
+      session: { voice: "juniper", transport: "wm" },
     });
 
     expect(answer).toStartWith("v=0");
     expect(fetch.calls).toHaveLength(1);
     const call = fetch.calls[0]!;
-    expect(call.url).toBe("https://chatgpt.com/realtime/vp?dcid=0");
+    expect(call.url).toBe("https://chatgpt.com/realtime/wm");
     const headers = new Headers(call.init?.headers);
     expect(headers.get("authorization")).toBe("Bearer access-secret");
     expect(headers.get("chatgpt-account-id")).toBe("acct_123");
     expect(headers.has("openai-beta")).toBeFalse();
     const form = call.init?.body as FormData;
     expect(form.get("sdp")).toBe("v=0\r\no=- offer");
-    expect(JSON.parse(String(form.get("session")))).toMatchObject({ voice: "juniper", voice_mode: "advanced" });
+    expect(JSON.parse(String(form.get("session")))).toMatchObject({
+      voice: "juniper",
+      voice_mode: "wingman",
+      history_and_training_disabled: false,
+    });
+  });
+
+  test("mints and validates the web-client auth required by /wm", async () => {
+    const accessToken = makeJwt({ client_id: "app_X8zY6vW2pQ9tR3dE7nK1jL5gH" });
+    const fetch = createMockFetch(() => new Response(JSON.stringify({
+      accessToken,
+      account: { id: "acct_web" },
+      user: { email: "person@example.com" },
+      expires: "2030-01-01T00:00:00.000Z",
+    }), { headers: { "content-type": "application/json" } }));
+    const auth = await exchangeChatGPTRealtimeWebSession({
+      config: resolveConfig({ fetch }),
+      sessionToken: "opaque-session-secret",
+    });
+    expect(auth).toMatchObject({
+      accessToken,
+      accountId: "acct_web",
+      email: "person@example.com",
+    });
+    const headers = new Headers(fetch.calls[0]?.init?.headers);
+    expect(headers.get("cookie")).toBe("__Secure-next-auth.session-token=opaque-session-secret");
   });
 
   test("decodes direct, nested, byte, and numeric-key events", () => {
@@ -79,6 +108,18 @@ describe("ChatGPT Realtime", () => {
     expect(createChatGPTRealtimeAction("relay_message", { text: "hello" })).toEqual({
       type: "action_request",
       payload: { text: "hello", action: "relay_message" },
+    });
+    const wrapped = JSON.parse(encodeChatGPTRealtimeEvent(createChatGPTRealtimeAction("stop_speaking")));
+    expect(wrapped.type).toBe("data_message");
+    expect(JSON.parse(wrapped.data).type).toBe("action_request");
+
+    expect(createChatGPTRealtimeRelayMessage("hello")).toMatchObject({
+      type: "relay_message",
+      payload: { type: "relay_message", message: { content: { parts: ["hello"] } } },
+    });
+    expect(createChatGPTRealtimeToolResult("call-1", { status: "done" })).toMatchObject({
+      type: "relay_message",
+      payload: { message: { metadata: { external_tool_result: true } } },
     });
   });
 });

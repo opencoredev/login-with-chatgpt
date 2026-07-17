@@ -1,7 +1,8 @@
 import type { ResolvedConfig } from "./config.ts";
 import { ChatGPTAuthError } from "./errors.ts";
 
-export type ChatGPTRealtimeVoiceMode = "advanced" | "standard";
+export type ChatGPTRealtimeTransport = "wm" | "vp" | "vps";
+export type ChatGPTRealtimeVoiceMode = "wingman" | "advanced" | "standard";
 export type ChatGPTRealtimeState =
   | "connecting"
   | "idle"
@@ -20,13 +21,14 @@ export type ChatGPTRealtimeAction =
   | "relay_message";
 
 export interface ChatGPTRealtimeClientTool {
-  name: string;
-  description?: string;
-  parameters?: Record<string, unknown>;
+  /** `/wm` accepts this closed provider enum; arbitrary custom ids are rejected. */
+  id: "timer" | "stopwatch" | "precise_location" | "led";
   [key: string]: unknown;
 }
 
 export interface ChatGPTRealtimeSessionOptions {
+  /** GPT Live (`wm`) is the native low-latency default. */
+  transport?: ChatGPTRealtimeTransport;
   voice?: string;
   voiceMode?: ChatGPTRealtimeVoiceMode;
   model?: string;
@@ -69,13 +71,65 @@ export interface ChatGPTRealtimeSession {
   client_tools: ChatGPTRealtimeClientTool[];
   history_and_training_disabled: boolean;
   conversation_mode: Record<string, unknown>;
-  enable_message_streaming: boolean;
+  enable_message_streaming?: boolean;
   [key: string]: unknown;
 }
 
 export interface ChatGPTRealtimeAuth {
+  /** Must be minted for the ChatGPT web client when using `/wm`. */
   accessToken: string;
-  accountId: string;
+  accountId?: string;
+}
+
+export interface ExchangeChatGPTRealtimeWebSessionOptions {
+  config: ResolvedConfig;
+  /** Opaque ChatGPT web session credential. Keep server-side and encrypted at rest. */
+  sessionToken: string;
+  signal?: AbortSignal;
+}
+
+export interface ChatGPTRealtimeWebAuth extends ChatGPTRealtimeAuth {
+  email: string;
+  expiresAt?: string;
+}
+
+/**
+ * Mints the short-lived web-client access token required by `/realtime/wm`.
+ * This is a server-only operation; never return `sessionToken` or the result
+ * bearer to browser code.
+ */
+export async function exchangeChatGPTRealtimeWebSession(
+  options: ExchangeChatGPTRealtimeWebSessionOptions,
+): Promise<ChatGPTRealtimeWebAuth> {
+  if (!options.sessionToken.trim()) throw new TypeError("`sessionToken` must be non-empty.");
+  const response = await options.config.fetch(`${options.config.realtimeBaseUrl}/api/auth/session`, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      cookie: `__Secure-next-auth.session-token=${options.sessionToken}`,
+    },
+    signal: options.signal,
+  });
+  const body = await response.json().catch(() => undefined) as Record<string, unknown> | undefined;
+  const accessToken = typeof body?.["accessToken"] === "string" ? body["accessToken"] : undefined;
+  const account = isRecord(body?.["account"]) ? body["account"] : undefined;
+  const user = isRecord(body?.["user"]) ? body["user"] : undefined;
+  const accountId = typeof account?.["id"] === "string" ? account["id"] : undefined;
+  const email = typeof user?.["email"] === "string" ? user["email"] : undefined;
+  const claims = accessToken ? decodeJwtPayload(accessToken) : undefined;
+  if (!response.ok || !accessToken || !accountId || !email || claims?.["client_id"] !== options.config.realtimeWebClientId) {
+    throw new ChatGPTAuthError(
+      "realtime_web_session_invalid",
+      "ChatGPT web session is missing, expired, or was minted for the wrong client.",
+      { status: response.status || 401 },
+    );
+  }
+  return {
+    accessToken,
+    accountId,
+    email,
+    expiresAt: typeof body?.["expires"] === "string" ? body["expires"] : undefined,
+  };
 }
 
 export interface CreateChatGPTRealtimeCallOptions {
@@ -137,31 +191,41 @@ export const CHATGPT_REALTIME_EVENT_TYPES = [
   "bidi_system_prompt", "client_tool_invoke", "client_tool_result", "client_tool_update",
 ] as const;
 
-export const CHATGPT_REALTIME_PATHS: Record<ChatGPTRealtimeVoiceMode, string> = {
-  advanced: "/realtime/vp",
-  standard: "/realtime/vps",
+export const CHATGPT_REALTIME_PATHS: Record<ChatGPTRealtimeTransport, string> = {
+  wm: "/realtime/wm",
+  vp: "/realtime/vp",
+  vps: "/realtime/vps",
 };
 
 /** Builds a complete upstream session while keeping undocumented fields overridable. */
 export function buildChatGPTRealtimeSession(
   options: ChatGPTRealtimeSessionOptions = {},
 ): ChatGPTRealtimeSession {
-  if (options.voiceMode !== undefined && options.voiceMode !== "advanced" && options.voiceMode !== "standard") {
-    throw new TypeError("`voiceMode` must be `advanced` or `standard`.");
+  if (options.voiceMode !== undefined && !["wingman", "advanced", "standard"].includes(options.voiceMode)) {
+    throw new TypeError("`voiceMode` must be `wingman`, `advanced`, or `standard`.");
+  }
+  const transport = options.transport ?? "wm";
+  if (transport === "wm" && options.historyAndTrainingDisabled === true) {
+    throw new TypeError("`historyAndTrainingDisabled` must be false for ChatGPT `/wm`.");
   }
   const voice = options.voice ?? "juniper";
-  const model = options.model ?? "gpt-4o";
+  const model = options.model ?? (transport === "wm" ? "" : "gpt-4o");
   if (!voice.trim() || voice.length > 64) throw new TypeError("`voice` must be a non-empty string of at most 64 characters.");
-  if (!model.trim() || model.length > 128) throw new TypeError("`model` must be a non-empty string of at most 128 characters.");
+  if (model.length > 128) throw new TypeError("`model` must be at most 128 characters.");
   if (options.clientTools !== undefined && !Array.isArray(options.clientTools)) {
     throw new TypeError("`clientTools` must be an array.");
+  }
+  for (const tool of options.clientTools ?? []) {
+    if (!["timer", "stopwatch", "precise_location", "led"].includes(tool.id)) {
+      throw new TypeError("`clientTools` contains an id not accepted by ChatGPT `/wm`.");
+    }
   }
   if (options.timezoneOffsetMinutes !== undefined &&
       (!Number.isInteger(options.timezoneOffsetMinutes) || Math.abs(options.timezoneOffsetMinutes) > 24 * 60)) {
     throw new TypeError("`timezoneOffsetMinutes` must be an integer between -1440 and 1440.");
   }
   const id = createUuid();
-  const voiceMode = options.voiceMode ?? "advanced";
+  const voiceMode = options.voiceMode ?? (transport === "wm" ? "wingman" : transport === "vps" ? "standard" : "advanced");
   const session: ChatGPTRealtimeSession = {
     ...(options.extra ?? {}),
     conversation_id: options.conversationId ?? null,
@@ -175,15 +239,15 @@ export function buildChatGPTRealtimeSession(
     voice_mode: voiceMode,
     model_slug: model,
     client_tools: options.clientTools ?? [],
-    history_and_training_disabled: options.historyAndTrainingDisabled ?? true,
+    history_and_training_disabled: options.historyAndTrainingDisabled ?? (transport === "wm" ? false : true),
     conversation_mode: options.conversationMode ?? { kind: "primary_assistant" },
-    enable_message_streaming: options.enableMessageStreaming ?? true,
   };
 
-  if (voiceMode === "advanced") session.model_slug_advanced = options.advancedModel ?? model;
+  if (transport === "vp") session.model_slug_advanced = options.advancedModel ?? model;
+  if (transport !== "wm") session.enable_message_streaming = options.enableMessageStreaming ?? true;
   assignDefined(session, "parent_message_id", options.parentMessageId);
   assignDefined(session, "model_speaks_first", options.modelSpeaksFirst);
-  assignDefined(session, "backend_reasoning_effort", options.reasoningEffort);
+  assignDefined(session, "backend_reasoning_effort", options.reasoningEffort ?? (transport === "wm" ? "instant" : undefined));
   assignDefined(session, "thinking_effort", options.thinkingEffort);
   assignDefined(session, "chatreq_token", options.chatRequestToken);
   assignDefined(session, "bidi_system_prompt_override", options.bidiSystemPromptOverride);
@@ -204,15 +268,19 @@ export async function createChatGPTRealtimeCall(
 ): Promise<string> {
   if (!options.sdp.trim()) throw new TypeError("`sdp` must be a non-empty WebRTC offer.");
   const session = buildChatGPTRealtimeSession(options.session);
-  const path = CHATGPT_REALTIME_PATHS[session.voice_mode];
+  const transport = options.session?.transport ?? "wm";
+  const path = CHATGPT_REALTIME_PATHS[transport];
   const auth = await options.getAuth();
+  if (transport !== "wm" && !auth.accountId) {
+    throw new ChatGPTAuthError("realtime_request_failed", "Realtime `/vp` and `/vps` require an account id.", { status: 401 });
+  }
   const form = new FormData();
   form.set("sdp", options.sdp);
   form.set("session", JSON.stringify(session));
 
   const headers = new Headers(options.headers);
   headers.set("Authorization", `Bearer ${auth.accessToken}`);
-  headers.set("chatgpt-account-id", auth.accountId);
+  if (auth.accountId) headers.set("chatgpt-account-id", auth.accountId);
   headers.set("Accept", "application/sdp");
   headers.set("OAI-Language", options.session?.language ?? "en-US");
   headers.set("OAI-Device-Id", createUuid());
@@ -224,7 +292,8 @@ export async function createChatGPTRealtimeCall(
   headers.set("Origin", options.config.realtimeBaseUrl);
   headers.set("Referer", `${options.config.realtimeBaseUrl}/`);
 
-  const response = await options.config.fetch(`${options.config.realtimeBaseUrl}${path}?dcid=0`, {
+  const requestUrl = `${options.config.realtimeBaseUrl}${path}${transport === "wm" ? "" : "?dcid=0"}`;
+  const response = await options.config.fetch(requestUrl, {
     method: "POST",
     headers,
     body: form,
@@ -255,9 +324,45 @@ export function createChatGPTRealtimeAction(
   return { type: "action_request", payload: { ...payload, action } };
 }
 
-/** Encodes any action/event for the negotiated data channel. */
+/** Encodes an event using the outer transceiver envelope required by `/wm`. */
 export function encodeChatGPTRealtimeEvent(event: ChatGPTRealtimeEvent): string {
-  return JSON.stringify(event);
+  return JSON.stringify({ type: "data_message", data: JSON.stringify(event) });
+}
+
+export interface ChatGPTRealtimeMessage {
+  id: string;
+  author: { role: "user" };
+  create_time: number;
+  content: { content_type: "text"; parts: string[] };
+  metadata: Record<string, unknown>;
+}
+
+/** Builds the exact `/wm` relay event used to inject typed messages/results. */
+export function createChatGPTRealtimeRelayMessage(
+  text: string,
+  metadata: Record<string, unknown> = {},
+  id = createUuid(),
+): ChatGPTRealtimeEvent {
+  const message: ChatGPTRealtimeMessage = {
+    id,
+    author: { role: "user" },
+    create_time: Date.now() / 1000,
+    content: { content_type: "text", parts: [text] },
+    metadata,
+  };
+  return { type: "relay_message", payload: { type: "relay_message", message } };
+}
+
+/** Relays a structured external-tool result back into GPT Live's native turn. */
+export function createChatGPTRealtimeToolResult(
+  callId: string,
+  result: Record<string, unknown>,
+): ChatGPTRealtimeEvent {
+  return createChatGPTRealtimeRelayMessage(
+    JSON.stringify({ type: "external_tool_result", call_id: callId, result }),
+    { external_tool_result: true },
+    `external-tool-${callId}-${String(result["status"] ?? "result")}`,
+  );
 }
 
 /**
@@ -312,6 +417,21 @@ function assignDefined(target: Record<string, unknown>, key: string, value: unkn
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
+  const encoded = token.split(".")[1];
+  if (!encoded) return undefined;
+  try {
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const decoded = typeof atob === "function"
+      ? atob(padded)
+      : Buffer.from(padded, "base64").toString("utf8");
+    return JSON.parse(decoded) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
 }
 
 function createUuid(): string {

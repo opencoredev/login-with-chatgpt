@@ -7,6 +7,7 @@ import {
   type KeyValueStore,
   type LoginStatus,
   type ChatGPTRealtimeSessionOptions,
+  type ChatGPTRealtimeAuth,
   type ChatGPTRealtimeVoiceMode,
   type ReasoningEffort,
   DEFAULT_MODEL,
@@ -70,6 +71,16 @@ export interface RealtimeProxyPolicy {
   allowedModes?: readonly ChatGPTRealtimeVoiceMode[];
   /** Server defaults merged before browser session options. */
   sessionDefaults?: ChatGPTRealtimeSessionOptions;
+  /**
+   * Supplies a short-lived ChatGPT web-client token for `/wm`. The normal
+   * Codex device-login token is intentionally not reused because OpenAI rejects
+   * it for GPT Live. Resolve this from an encrypted, user-bound web session.
+   */
+  getAuth?: (context: {
+    request: Request;
+    sessionId: string;
+    transport: "wm" | "vp" | "vps";
+  }) => Promise<ChatGPTRealtimeAuth> | ChatGPTRealtimeAuth;
 }
 
 /** Fixed-window rate counter persisted per session id. */
@@ -449,24 +460,41 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
   async function handleRealtime(request: Request): Promise<Response> {
     const sessionId = await readSessionId(request);
     if (!sessionId) return json({ error: "not_authenticated" }, { status: 401 });
-    const tokens = await sessions.getFreshTokens(sessionId);
-    if (!tokens?.accessToken || !tokens.accountId) {
-      return json({ error: "not_authenticated" }, { status: 401 });
-    }
-
     const payload = await prepareRealtimePayload(request, maxRealtimeBodyBytes);
     if (payload instanceof Response) return payload;
-    const mode = payload.session?.voiceMode ?? realtime.sessionDefaults?.voiceMode ?? "advanced";
+    const mergedSession = mergeRealtimeSessionOptions(realtime.sessionDefaults, payload.session) ?? {};
+    const transport = mergedSession.transport ?? "wm";
+    const mode = mergedSession.voiceMode ?? (transport === "wm" ? "wingman" : transport === "vps" ? "standard" : "advanced");
     if (realtime.allowedModes && !realtime.allowedModes.includes(mode)) {
       return json({ error: "realtime_mode_not_allowed", voiceMode: mode }, { status: 403 });
     }
 
     try {
+      let realtimeAuth: ChatGPTRealtimeAuth;
+      if (realtime.getAuth) {
+        realtimeAuth = await realtime.getAuth({ request, sessionId, transport });
+      } else {
+        if (transport === "wm") {
+          return json(
+            {
+              error: "realtime_web_auth_required",
+              message: "GPT Live `/wm` requires realtime.getAuth backed by a server-side ChatGPT web session.",
+            },
+            { status: 501 },
+          );
+        }
+        const tokens = await sessions.getFreshTokens(sessionId);
+        if (!tokens?.accessToken || !tokens.accountId) {
+          return json({ error: "not_authenticated" }, { status: 401 });
+        }
+        realtimeAuth = { accessToken: tokens.accessToken, accountId: tokens.accountId };
+      }
+
       const answer = await createChatGPTRealtimeCall({
         config,
-        getAuth: () => ({ accessToken: tokens.accessToken, accountId: tokens.accountId as string }),
+        getAuth: () => realtimeAuth,
         sdp: payload.sdp,
-        session: mergeRealtimeSessionOptions(realtime.sessionDefaults, payload.session),
+        session: mergedSession,
         signal: request.signal,
       });
       return new Response(answer, {
