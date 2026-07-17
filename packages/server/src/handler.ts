@@ -752,9 +752,12 @@ async function prepareRealtimePayload(
       );
     }
     const mode = rawSession?.["voiceMode"];
-    if (mode !== undefined && mode !== "advanced" && mode !== "standard") {
+    if (mode !== undefined && mode !== "wingman" && mode !== "advanced" && mode !== "standard") {
       return json(
-        { error: "invalid_realtime_request", message: "`session.voiceMode` must be `advanced` or `standard`." },
+        {
+          error: "invalid_realtime_request",
+          message: "`session.voiceMode` must be `wingman`, `advanced`, or `standard`.",
+        },
         { status: 400 },
       );
     }

@@ -95,7 +95,12 @@ describe("createChatGPTHandler", () => {
       headers: { cookie, "content-type": "application/json" },
       body: JSON.stringify({
         sdp: "v=0\r\no=- browser-offer",
-        session: { voice: "juniper", transport: "wm", clientTools: [{ id: "timer" }] },
+        session: {
+          voice: "juniper",
+          transport: "wm",
+          voiceMode: "wingman",
+          clientTools: [{ id: "timer" }],
+        },
       }),
     }));
     expect(realtime.status).toBe(201);
