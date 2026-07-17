@@ -12,7 +12,8 @@
 - Tokens never touch the browser: HttpOnly cookie only
 - Works with the Vercel AI SDK: `streamText()` straight from the client
 - Generates and edits images with size, quality, format, masks, and streaming previews
-- Runs native GPT Live `/wm` audio over WebRTC, with barge-in and structured external-tool relays
+- Experimental GPT Live `/wm` audio over WebRTC, with interruption controls;
+  requires a separate server-held ChatGPT web session because Codex OAuth does not grant voice access
 - Open source, MIT licensed
 
 The handler keeps tokens behind the proxy path by default. The browser gets a session cookie, asks your backend which models the account has, and streams from there.
@@ -29,8 +30,8 @@ npm and pnpm work too. Everything ships as ESM with types for Node 18+.
 
 | Package | Does |
 | --- | --- |
-| `@opencoredev/loginwithchatgpt-core` | OAuth, token refresh, model discovery, Realtime protocol + browser client |
-| `@opencoredev/loginwithchatgpt-server` | Backend handler: login, session, models, responses and Realtime signaling |
+| `@opencoredev/loginwithchatgpt-core` | OAuth, token refresh, model discovery, and experimental private voice transport |
+| `@opencoredev/loginwithchatgpt-server` | Backend handler: login, session, models, responses, and private voice signaling |
 | `@opencoredev/loginwithchatgpt-react` | The `<LoginWithChatGPT />` button and hook |
 | `@opencoredev/loginwithchatgpt-ai` | Vercel AI SDK providers |
 
@@ -38,8 +39,9 @@ npm and pnpm work too. Everything ships as ESM with types for Node 18+.
 
 Start with the [quickstart](./docs/content/docs/quickstart.mdx). The [security model](./docs/content/docs/concepts/security.mdx) explains how tokens stay on your server, and the [production checklist](./docs/content/docs/guides/production.mdx) is there for when you deploy.
 
-For speech-to-speech, interruption, captions, and client tools, see
-[ChatGPT Realtime voice](./docs/content/docs/guides/realtime-voice.mdx).
+For the experimental subscription-backed speech-to-speech transport, its
+limitations, interruption controls, and captions, see
+[experimental ChatGPT voice transport](./docs/content/docs/guides/realtime-voice.mdx).
 
 ## Agent skill
 

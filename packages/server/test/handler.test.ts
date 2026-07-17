@@ -99,7 +99,6 @@ describe("createChatGPTHandler", () => {
           voice: "juniper",
           transport: "wm",
           voiceMode: "wingman",
-          clientTools: [{ id: "timer" }],
         },
       }),
     }));
@@ -116,7 +115,21 @@ describe("createChatGPTHandler", () => {
       voice: "juniper",
       voice_mode: "wingman",
       history_and_training_disabled: false,
-      client_tools: [{ id: "timer" }],
+      client_tools: [],
+    });
+
+    const compatibility = await handler.handler(new Request(`${BASE}/realtime`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        sdp: "v=0\r\no=- browser-offer",
+        session: { transport: "vp", voiceMode: "advanced", model: "explicit-model" },
+      }),
+    }));
+    expect(compatibility.status).toBe(403);
+    expect(await compatibility.json()).toMatchObject({
+      error: "realtime_transport_not_allowed",
+      transport: "vp",
     });
   });
 

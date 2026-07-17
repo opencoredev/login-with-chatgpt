@@ -52,6 +52,7 @@ Returned by the [handler routes](routes.mdx):
 | `401` | `{ "error": "not_authenticated" }` | `/models`, `/responses`, `/realtime` |
 | `403` | `{ "error": "model_not_allowed", "model": "…" }` | `/responses` |
 | `403` | `{ "error": "realtime_mode_not_allowed", "voiceMode": "…" }` | `/realtime` |
+| `403` | `{ "error": "realtime_transport_not_allowed", "transport": "…" }` | `/realtime` |
 | `403` | `{ "error": "origin_not_allowed", "origin": "…" }` | all non-GET routes |
 | `404` / `405` | plain text, `405` includes an `Allow` header | unknown path / wrong method |
 | `413` | `{ "error": "responses_request_too_large", "maxRequestBytes": … }` | `/responses` |

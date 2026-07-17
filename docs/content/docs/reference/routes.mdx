@@ -95,25 +95,26 @@ response.
 
 ## `POST /realtime`
 
-Exchanges a browser WebRTC offer for an SDP answer using the authenticated
-ChatGPT session. The OAuth token remains server-side. The request is JSON:
+Experimentally exchanges a browser WebRTC offer through an undocumented
+ChatGPT web transport. The credential remains server-side. This is not the
+public Realtime API. The request is JSON:
 
 ```json
 {
   "sdp": "v=0\r\n…",
-  "session": { "voice": "juniper", "voiceMode": "advanced" }
+  "session": { "voice": "juniper", "transport": "wm", "voiceMode": "wingman" }
 }
 ```
 
 Success is `201 application/sdp`. `session` accepts the complete schema in
-[ChatGPT Realtime voice](/docs/guides/realtime-voice#session-schema).
+[experimental ChatGPT voice transport](/docs/guides/realtime-voice#session-schema).
 
 | Status | Body / behavior |
 | --- | --- |
 | `201` | WebRTC answer SDP. |
 | `400` | `invalid_realtime_request`. |
 | `401` | `not_authenticated`. |
-| `403` | `realtime_mode_not_allowed` or `origin_not_allowed`. |
+| `403` | `realtime_mode_not_allowed`, `realtime_transport_not_allowed`, or `origin_not_allowed`. |
 | `413` | `realtime_request_too_large`. |
 | upstream / `502` | `realtime_request_failed`, with bounded upstream detail. |
 

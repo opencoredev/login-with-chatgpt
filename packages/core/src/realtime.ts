@@ -20,14 +20,8 @@ export type ChatGPTRealtimeAction =
   | "resume_listening"
   | "relay_message";
 
-export interface ChatGPTRealtimeClientTool {
-  /** `/wm` accepts this closed provider enum; arbitrary custom ids are rejected. */
-  id: "timer" | "stopwatch" | "precise_location" | "led";
-  [key: string]: unknown;
-}
-
 export interface ChatGPTRealtimeSessionOptions {
-  /** GPT Live (`wm`) is the native low-latency default. */
+  /** Experimental private ChatGPT transport. `wm` is the GPT Live path. */
   transport?: ChatGPTRealtimeTransport;
   voice?: string;
   voiceMode?: ChatGPTRealtimeVoiceMode;
@@ -38,21 +32,9 @@ export interface ChatGPTRealtimeSessionOptions {
   parentMessageId?: string;
   timezone?: string;
   timezoneOffsetMinutes?: number;
-  clientTools?: ChatGPTRealtimeClientTool[];
   conversationMode?: Record<string, unknown>;
   historyAndTrainingDisabled?: boolean;
   enableMessageStreaming?: boolean;
-  modelSpeaksFirst?: boolean;
-  reasoningEffort?: string;
-  thinkingEffort?: string;
-  chatRequestToken?: string;
-  bidiSystemPromptOverride?: Record<string, unknown>;
-  structuredSystemPromptPersonalityOverride?: Record<string, unknown>;
-  delegationTransportOverride?: Record<string, unknown>;
-  jobsMockInterviewConfig?: Record<string, unknown>;
-  systemPromptType?: string;
-  /** Forward-compatible fields merged into the upstream session object. */
-  extra?: Record<string, unknown>;
 }
 
 /** The multipart `session` object accepted by ChatGPT's web Realtime edge. */
@@ -68,7 +50,8 @@ export interface ChatGPTRealtimeSession {
   voice_mode: ChatGPTRealtimeVoiceMode;
   model_slug: string;
   model_slug_advanced?: string;
-  client_tools: ChatGPTRealtimeClientTool[];
+  /** Required private wire field. Custom values are intentionally unsupported. */
+  client_tools: [];
   history_and_training_disabled: boolean;
   conversation_mode: Record<string, unknown>;
   enable_message_streaming?: boolean;
@@ -199,31 +182,13 @@ export interface ChatGPTRealtimeTranscriptionEvent extends ChatGPTRealtimeEvent 
   transcript?: string;
 }
 
-export interface ChatGPTRealtimeToolInvokeEvent extends ChatGPTRealtimeEvent {
-  type: "client_tool_invoke";
-  name?: string;
-  call_id?: string;
-  arguments?: unknown;
-  payload?: Record<string, unknown>;
-}
-
-export interface ChatGPTRealtimeToolResultEvent extends ChatGPTRealtimeEvent {
-  type: "client_tool_result" | "client_tool_update";
-  call_id?: string;
-  result?: unknown;
-}
-
 /** Known event names observed on ChatGPT's Realtime data channel. */
 export const CHATGPT_REALTIME_EVENT_TYPES = [
   "state_update", "action_request", "goodbye", "conversation_update",
   "streaming_message_update", "close_request", "close_ready", "relay_message",
-  "unknown", "usage_update", "tool_update", "spawn_update", "wingman_session_debug",
-  "relay_message_processed", "turn_context", "performance", "startup_telemetry",
-  "client_metrics", "client_metadata_update", "track_state", "full_chat_message",
-  "chat_message_delta", "moderation", "url_moderation", "bio_safety_review_update",
-  "live_captioning_text", "speaking_update", "user_transcription_text",
-  "update_settings_request", "update_settings_result", "get_bidi_system_prompt",
-  "bidi_system_prompt", "client_tool_invoke", "client_tool_result", "client_tool_update",
+  "relay_message_processed", "track_state", "full_chat_message",
+  "chat_message_delta", "live_captioning_text", "speaking_update",
+  "user_transcription_text",
 ] as const;
 
 export const CHATGPT_REALTIME_PATHS: Record<ChatGPTRealtimeTransport, string> = {
@@ -232,7 +197,7 @@ export const CHATGPT_REALTIME_PATHS: Record<ChatGPTRealtimeTransport, string> = 
   vps: "/realtime/vps",
 };
 
-/** Builds a complete upstream session while keeping undocumented fields overridable. */
+/** Builds the deliberately limited private session payload supported by this SDK. */
 export function buildChatGPTRealtimeSession(
   options: ChatGPTRealtimeSessionOptions = {},
 ): ChatGPTRealtimeSession {
@@ -240,29 +205,33 @@ export function buildChatGPTRealtimeSession(
     throw new TypeError("`voiceMode` must be `wingman`, `advanced`, or `standard`.");
   }
   const transport = options.transport ?? "wm";
+  if (!["wm", "vp", "vps"].includes(transport)) {
+    throw new TypeError("`transport` must be `wm`, `vp`, or `vps`.");
+  }
+  const expectedVoiceMode = transport === "wm" ? "wingman" : transport === "vps" ? "standard" : "advanced";
+  if (options.voiceMode !== undefined && options.voiceMode !== expectedVoiceMode) {
+    throw new TypeError(`\`voiceMode\` must be \`${expectedVoiceMode}\` for the \`${transport}\` transport.`);
+  }
   if (transport === "wm" && options.historyAndTrainingDisabled === true) {
     throw new TypeError("`historyAndTrainingDisabled` must be false for ChatGPT `/wm`.");
   }
   const voice = options.voice ?? "juniper";
-  const model = options.model ?? (transport === "wm" ? "" : "gpt-4o");
+  // Let the subscription service select its current model unless the caller
+  // explicitly targets a compatibility transport model. Do not pin legacy
+  // product models in SDK defaults.
+  const model = options.model ?? "";
   if (!voice.trim() || voice.length > 64) throw new TypeError("`voice` must be a non-empty string of at most 64 characters.");
   if (model.length > 128) throw new TypeError("`model` must be at most 128 characters.");
-  if (options.clientTools !== undefined && !Array.isArray(options.clientTools)) {
-    throw new TypeError("`clientTools` must be an array.");
-  }
-  for (const tool of options.clientTools ?? []) {
-    if (!["timer", "stopwatch", "precise_location", "led"].includes(tool.id)) {
-      throw new TypeError("`clientTools` contains an id not accepted by ChatGPT `/wm`.");
-    }
+  if (transport !== "wm" && !model.trim()) {
+    throw new TypeError("`model` is required for the undocumented `vp` and `vps` compatibility transports.");
   }
   if (options.timezoneOffsetMinutes !== undefined &&
       (!Number.isInteger(options.timezoneOffsetMinutes) || Math.abs(options.timezoneOffsetMinutes) > 24 * 60)) {
     throw new TypeError("`timezoneOffsetMinutes` must be an integer between -1440 and 1440.");
   }
   const id = createUuid();
-  const voiceMode = options.voiceMode ?? (transport === "wm" ? "wingman" : transport === "vps" ? "standard" : "advanced");
+  const voiceMode = options.voiceMode ?? expectedVoiceMode;
   const session: ChatGPTRealtimeSession = {
-    ...(options.extra ?? {}),
     conversation_id: options.conversationId ?? null,
     language_code: options.language ?? null,
     requested_default_model: model,
@@ -273,7 +242,7 @@ export function buildChatGPTRealtimeSession(
     timezone: options.timezone ?? "UTC",
     voice_mode: voiceMode,
     model_slug: model,
-    client_tools: options.clientTools ?? [],
+    client_tools: [],
     history_and_training_disabled: options.historyAndTrainingDisabled ?? (transport === "wm" ? false : true),
     conversation_mode: options.conversationMode ?? { kind: "primary_assistant" },
   };
@@ -281,15 +250,7 @@ export function buildChatGPTRealtimeSession(
   if (transport === "vp") session.model_slug_advanced = options.advancedModel ?? model;
   if (transport !== "wm") session.enable_message_streaming = options.enableMessageStreaming ?? true;
   assignDefined(session, "parent_message_id", options.parentMessageId);
-  assignDefined(session, "model_speaks_first", options.modelSpeaksFirst);
-  assignDefined(session, "backend_reasoning_effort", options.reasoningEffort ?? (transport === "wm" ? "instant" : undefined));
-  assignDefined(session, "thinking_effort", options.thinkingEffort);
-  assignDefined(session, "chatreq_token", options.chatRequestToken);
-  assignDefined(session, "bidi_system_prompt_override", options.bidiSystemPromptOverride);
-  assignDefined(session, "structured_system_prompt_personality_override", options.structuredSystemPromptPersonalityOverride);
-  assignDefined(session, "delegation_transport_override", options.delegationTransportOverride);
-  assignDefined(session, "jobs_mock_interview_config", options.jobsMockInterviewConfig);
-  assignDefined(session, "system_prompt_type", options.systemPromptType);
+  if (transport === "wm") session.backend_reasoning_effort = "instant";
   return session;
 }
 
@@ -372,7 +333,7 @@ export interface ChatGPTRealtimeMessage {
   metadata: Record<string, unknown>;
 }
 
-/** Builds the exact `/wm` relay event used to inject typed messages/results. */
+/** Builds the currently observed private `/wm` event used to inject typed messages. */
 export function createChatGPTRealtimeRelayMessage(
   text: string,
   metadata: Record<string, unknown> = {},
@@ -386,18 +347,6 @@ export function createChatGPTRealtimeRelayMessage(
     metadata,
   };
   return { type: "relay_message", payload: { type: "relay_message", message } };
-}
-
-/** Relays a structured external-tool result back into GPT Live's native turn. */
-export function createChatGPTRealtimeToolResult(
-  callId: string,
-  result: Record<string, unknown>,
-): ChatGPTRealtimeEvent {
-  return createChatGPTRealtimeRelayMessage(
-    JSON.stringify({ type: "external_tool_result", call_id: callId, result }),
-    { external_tool_result: true },
-    `external-tool-${callId}-${String(result["status"] ?? "result")}`,
-  );
 }
 
 /**

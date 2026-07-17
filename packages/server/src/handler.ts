@@ -67,7 +67,9 @@ export interface ResponsesRateLimit {
 export interface RealtimeProxyPolicy {
   /** Maximum JSON signaling request size. Defaults to 256 KiB. */
   maxRequestBytes?: number;
-  /** Voice modes the browser may request. Defaults to both modes. */
+  /** Private transports the browser may request. Defaults to only `wm`. */
+  allowedTransports?: readonly ("wm" | "vp" | "vps")[];
+  /** Voice modes the browser may request. Unrestricted when omitted. */
   allowedModes?: readonly ChatGPTRealtimeVoiceMode[];
   /** Server defaults merged before browser session options. */
   sessionDefaults?: ChatGPTRealtimeSessionOptions;
@@ -464,6 +466,9 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
     if (payload instanceof Response) return payload;
     const mergedSession = mergeRealtimeSessionOptions(realtime.sessionDefaults, payload.session) ?? {};
     const transport = mergedSession.transport ?? "wm";
+    if (!(realtime.allowedTransports ?? ["wm"]).includes(transport)) {
+      return json({ error: "realtime_transport_not_allowed", transport }, { status: 403 });
+    }
     const mode = mergedSession.voiceMode ?? (transport === "wm" ? "wingman" : transport === "vps" ? "standard" : "advanced");
     if (realtime.allowedModes && !realtime.allowedModes.includes(mode)) {
       return json({ error: "realtime_mode_not_allowed", voiceMode: mode }, { status: 403 });
@@ -761,6 +766,16 @@ async function prepareRealtimePayload(
         { status: 400 },
       );
     }
+    const transport = rawSession?.["transport"];
+    if (transport !== undefined && transport !== "wm" && transport !== "vp" && transport !== "vps") {
+      return json(
+        {
+          error: "invalid_realtime_request",
+          message: "`session.transport` must be `wm`, `vp`, or `vps`.",
+        },
+        { status: 400 },
+      );
+    }
     return {
       sdp: parsed["sdp"],
       session: rawSession as ChatGPTRealtimeSessionOptions | undefined,
@@ -779,7 +794,6 @@ function mergeRealtimeSessionOptions(
   return {
     ...defaults,
     ...requested,
-    extra: { ...(defaults.extra ?? {}), ...(requested.extra ?? {}) },
   };
 }
 

@@ -2,7 +2,6 @@ import type { FetchLike } from "./types.ts";
 import {
   createChatGPTRealtimeAction,
   createChatGPTRealtimeRelayMessage,
-  createChatGPTRealtimeToolResult,
   encodeChatGPTRealtimeEvent,
   getChatGPTRealtimePayload,
   parseChatGPTRealtimeEvent,
@@ -26,12 +25,12 @@ export interface ConnectChatGPTRealtimeOptions {
   endpoint?: string;
   session?: ChatGPTRealtimeSessionOptions;
   fetch?: FetchLike;
-  /** Reuse an existing stream instead of asking for microphone/camera access. */
+  /** Reuse an existing audio-only stream instead of asking for microphone access. */
   mediaStream?: MediaStream;
   mediaConstraints?: MediaStreamConstraints;
   peerConnection?: RTCPeerConnection;
   audioElement?: HTMLAudioElement;
-  /** Add the send-only video m-line expected by ChatGPT. Defaults to true. */
+  /** Add the inert video m-line required by the private handshake. This does not enable video input. */
   addVideoTransceiver?: boolean;
   /** Local voice-activity barge-in. Enabled by default; set false to disable. */
   bargeIn?: boolean | ChatGPTRealtimeBargeInOptions;
@@ -55,10 +54,8 @@ export interface ChatGPTRealtimeConnection {
   stopListening(): void;
   stopSpeaking(): void;
   resumeListening(): void;
-  /** Injects a typed user message into the native GPT Live conversation. */
+  /** Injects a typed user message using the observed private GPT Live protocol. */
   relayMessage(text: string, metadata?: Record<string, unknown>): void;
-  /** Returns a structured external-tool result without replacing native audio. */
-  relayToolResult(callId: string, result: Record<string, unknown>): void;
   setInputMuted(muted: boolean): void;
   setOutputMuted(muted: boolean): void;
   close(): void;
@@ -77,6 +74,12 @@ export async function connectChatGPTRealtime(
   if (typeof RTCPeerConnection === "undefined" || !navigator.mediaDevices) {
     throw new TypeError("connectChatGPTRealtime() requires browser WebRTC and media APIs.");
   }
+  if (options.mediaConstraints?.video) {
+    throw new TypeError("GPT Live does not support camera or screen-share input.");
+  }
+  if (options.mediaStream?.getVideoTracks().length) {
+    throw new TypeError("GPT Live requires an audio-only mediaStream.");
+  }
 
   const ownsStream = !options.mediaStream;
   const stream = options.mediaStream ?? await navigator.mediaDevices.getUserMedia(
@@ -92,6 +95,7 @@ export async function connectChatGPTRealtime(
 
   let state: ChatGPTRealtimeState = "connecting";
   let closed = false;
+  let remoteClosing = false;
   let outputMuted = audio.muted;
   let restoreTimer: ReturnType<typeof setTimeout> | undefined;
   const cleanups: Array<() => void> = [];
@@ -127,11 +131,15 @@ export async function connectChatGPTRealtime(
       if (event.type === "state_update" && isRealtimeState(payload["new_state"])) {
         setState(payload["new_state"]);
       }
+      if (event.type === "goodbye" || event.type === "close_ready") {
+        remoteClosing = true;
+        setState("halted");
+      }
       options.onEvent?.(event);
     }).catch(fail);
   });
   channel.addEventListener("close", () => {
-    if (!closed) fail(new Error("Realtime data channel closed unexpectedly."));
+    if (!closed && !remoteClosing) fail(new Error("Realtime data channel closed unexpectedly."));
   });
 
   const send = (event: ChatGPTRealtimeEvent) => {
@@ -204,7 +212,6 @@ export async function connectChatGPTRealtime(
     stopSpeaking: () => action("stop_speaking"),
     resumeListening: () => action("resume_listening"),
     relayMessage: (text, metadata) => send(createChatGPTRealtimeRelayMessage(text, metadata)),
-    relayToolResult: (callId, result) => send(createChatGPTRealtimeToolResult(callId, result)),
     setInputMuted: (muted) => stream.getAudioTracks().forEach((track) => { track.enabled = !muted; }),
     setOutputMuted: (muted) => { outputMuted = muted; audio.muted = muted; },
     close: () => {

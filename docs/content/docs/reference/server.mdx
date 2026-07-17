@@ -44,7 +44,7 @@ those APIs. The routes it serves are documented in [HTTP routes](routes.mdx).
 | `defaultModel` | `string` | `"gpt-5.5"` | Injected when a `/responses` body omits `model`. |
 | `enableResponsesProxy` | `boolean` | `true` | `false` disables the `/responses` **and** `/models` routes. |
 | `enableRealtime` | `boolean` | `true` | `false` disables the `/realtime` signaling route. |
-| `realtime` | `RealtimeProxyPolicy` | `{}` | SDP size, allowed modes, and server session defaults. |
+| `realtime` | `RealtimeProxyPolicy` | `{}` | Experimental private voice signaling policy. |
 | `responsesProxy` | `ResponsesProxyPolicy` | `{}` | Guardrails below. |
 | `allowedOrigins` | `readonly string[]` | `[]` | Extra origins allowed on cookie-authenticated non-GET routes. |
 | `dangerouslyAllowTokenExport` | `boolean` | `false` | Enables `dangerouslyGetTokens()` / deprecated `getTokens()`. Only use when your server code intentionally accepts custody of raw bearer tokens. |
@@ -63,8 +63,9 @@ those APIs. The routes it serves are documented in [HTTP routes](routes.mdx).
 | Option | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `maxRequestBytes` | `number` | `262_144` | Maximum JSON SDP + session body. |
-| `allowedModes` | `readonly ("advanced" \| "standard")[]` | both | Disallowed requests get `403 realtime_mode_not_allowed`. |
-| `sessionDefaults` | `ChatGPTRealtimeSessionOptions` | `{}` | Defaults merged before browser options. Nested `extra` objects are merged. |
+| `allowedTransports` | `readonly ("wm" \| "vp" \| "vps")[]` | `["wm"]` | Undocumented compatibility transports require explicit opt-in. |
+| `allowedModes` | `readonly ("wingman" \| "advanced" \| "standard")[]` | unrestricted | Disallowed requests get `403 realtime_mode_not_allowed`. |
+| `sessionDefaults` | `ChatGPTRealtimeSessionOptions` | `{}` | Defaults merged before browser options. |
 
 ### Codex request defaults
 

@@ -25,7 +25,7 @@ export interface ChatGPTConfig {
   scope?: string;
   /** Codex model API base URL. Defaults to `https://chatgpt.com/backend-api/codex`. */
   codexBaseUrl?: string;
-  /** ChatGPT web origin used for subscription-backed Realtime signaling. */
+  /** ChatGPT web origin used by the unsupported private voice transport. */
   realtimeBaseUrl?: string;
   /** ChatGPT web client identifier sent to the Realtime edge. */
   realtimeClientVersion?: string;

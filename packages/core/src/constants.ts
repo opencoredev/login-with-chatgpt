@@ -20,7 +20,7 @@ export const DEFAULT_SCOPE = "openid profile email offline_access";
 /** Base URL of the ChatGPT-backed Codex model API. */
 export const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
 
-/** ChatGPT web origin used for subscription-backed Realtime signaling. */
+/** ChatGPT web origin used by the unsupported private voice transport. */
 export const DEFAULT_REALTIME_BASE_URL = "https://chatgpt.com";
 
 /** Current ChatGPT web client identifiers used by the Realtime edge. */

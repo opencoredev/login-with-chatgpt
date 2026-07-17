@@ -3,7 +3,7 @@
 Backend handler for [Login with ChatGPT](../../README.md).
 
 It exposes login, status, session, logout, model discovery, responses proxy,
-and Realtime WebRTC signaling routes from one Web-standard
+and experimental private WebRTC voice signaling routes from one Web-standard
 `(Request) => Response` handler.
 
 ```ts
@@ -20,6 +20,7 @@ const auth = createChatGPTHandler({
     // Resolve from an encrypted, user-bound ChatGPT web session. The normal
     // Codex login token is not accepted by GPT Live `/realtime/wm`.
     getAuth: async ({ request }) => getChatGPTLiveAuth(request),
+    allowedTransports: ["wm"],
     sessionDefaults: { transport: "wm", historyAndTrainingDisabled: false },
   },
 });
@@ -41,7 +42,7 @@ Bun.serve({
 | `POST` | `/logout` | Delete the session and clear the cookie. |
 | `GET` | `/models` | Return available model slugs for the signed-in account. |
 | `POST` | `/responses` | Proxy an authenticated streaming responses request. |
-| `POST` | `/realtime` | Exchange a browser WebRTC offer for a ChatGPT Realtime SDP answer. |
+| `POST` | `/realtime` | Experimentally exchange a browser WebRTC offer through a private ChatGPT route. |
 
 ## Helpers
 
@@ -59,6 +60,9 @@ const proxyFetch = auth.proxyFetch(request);
   raw bearer tokens stay inside the handler.
 - `/realtime` accepts only session options and SDP; it never returns OAuth
   material to the browser.
+- `/realtime` permits only the experimental `wm` transport by default. The
+  undocumented `vp` and `vps` compatibility paths require an explicit
+  `allowedTransports` opt-in and carry no feature or stability guarantee.
 - GPT Live auth is supplied by `realtime.getAuth`; web-session credentials must
   remain encrypted, server-side, and bound to the application's user identity.
   Persist the stable device id and rotated session-cookie chunks returned by the

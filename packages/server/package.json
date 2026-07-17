@@ -1,7 +1,7 @@
 {
   "name": "@opencoredev/loginwithchatgpt-server",
   "version": "0.2.0",
-  "description": "Server handler for Login with ChatGPT: login, sessions, Codex responses, and Realtime WebRTC signaling.",
+  "description": "Server handler for Login with ChatGPT: login, sessions, Codex responses, and experimental private WebRTC voice signaling.",
   "type": "module",
   "license": "MIT",
   "exports": {

@@ -39,13 +39,13 @@ const models = await listCodexModels({
 | Tokens | `ensureFreshTokens`, `isAccessTokenExpired`, `refreshTokens` |
 | Identity | `parseUser`, `deriveAccountId`, `decodeJwt`, `getTokenExpiry` |
 | Transport | `createCodexFetch`, `normalizeResponsesBody`, `listCodexModels`, `extractCodexModelSlugs` |
-| Realtime | `connectChatGPTRealtime`, `createChatGPTRealtimeCall`, `exchangeChatGPTRealtimeWebSession`, relay/result helpers |
+| Experimental voice | `connectChatGPTRealtime`, `createChatGPTRealtimeCall`, `exchangeChatGPTRealtimeWebSession`, event helpers |
 | Storage | `KeyValueStore`, `MemoryStore` |
 | Config/errors | `resolveConfig`, `ChatGPTConfig`, `ChatGPTAuthError` |
 
 See the root README and docs site for production notes.
 
-## Realtime voice
+## Experimental private voice transport
 
 Browser applications can call `connectChatGPTRealtime()` after mounting the
 server package's `/realtime` route. It creates a WebRTC peer, captures the
@@ -59,5 +59,5 @@ server-side, mint short-lived auth with `exchangeChatGPTRealtimeWebSession()`,
 persist its returned stable device id and rotated cookie chunks, and provide the
 result through the server package's `realtime.getAuth` callback.
 
-See the [Realtime voice guide](../../docs/content/docs/guides/realtime-voice.mdx)
-for session options, event names, client tools, and low-level primitives.
+See the [experimental voice guide](../../docs/content/docs/guides/realtime-voice.mdx)
+for session options, event names, product limitations, and low-level primitives.

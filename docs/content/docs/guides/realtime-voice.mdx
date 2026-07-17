@@ -1,20 +1,41 @@
 ---
-title: ChatGPT Realtime voice
-description: Low-latency speech-to-speech over WebRTC, with interruption, transcripts, captions, modes, and client-tool events.
+title: Experimental ChatGPT voice transport
+description: An unsupported private transport for GPT Live audio, with interruption, transcripts, captions, and explicit product limitations.
 ---
 
-The SDK can open the signed-in user's ChatGPT voice transport over WebRTC. Audio
-flows directly between the browser and the Realtime peer after a one-time SDP
+The SDK can experimentally open the signed-in user's private ChatGPT voice
+transport over WebRTC. Audio flows directly between the browser and the voice
+peer after a one-time SDP
 exchange through your backend. Access, refresh, and ChatGPT web-session
 credentials never enter the WebRTC/browser response.
 
-<Callout type="warn" title="ChatGPT transport, not the public Realtime API">
+<Callout type="warn" title="Unsupported private ChatGPT transport">
   This integration targets ChatGPT's subscription-backed web transport. Its
   endpoints and data-channel schema are not a documented public OpenAI API and
-  can change independently. If your product uses an OpenAI API key, prefer the
+  can change or stop working without notice. This is not an official capability
+  of the OpenAI SDK, and a ChatGPT subscription is not an API credential. If
+  your product uses an OpenAI API key, prefer the
   official [`/v1/realtime/calls` WebRTC interface](https://developers.openai.com/api/docs/guides/realtime-webrtc)
   instead.
 </Callout>
+
+<Callout type="warn" title="No application tool calling">
+  GPT Live's private `/wm` session does not accept arbitrary function tools,
+  connected apps, plugins, or application-defined tool results. The public
+  Realtime API supports function tools, but it uses API models and API billing;
+  that support does not carry over to this subscription transport. This SDK
+  does not expose tool registration or pretend transcript monitoring is native
+  tool calling.
+</Callout>
+
+OpenAI currently documents three ChatGPT product options: **Live** (GPT-Live-1
+on paid plans), **Advanced** (the previous realtime experience), and **Standard**
+(turn-by-turn transcription). Product availability depends on plan, region,
+device, and rollout. The private route names below are observed implementation
+details; they are not a documented contract mapping those product options. See
+OpenAI's current [ChatGPT Voice documentation](https://help.openai.com/en/articles/20001274/)
+for the authoritative product capability and availability matrix. OpenAI also
+states that [Voice does not support apps](https://help.openai.com/en/articles/11487775-connectors-in-chatgpt).
 
 ## Start a call
 
@@ -71,12 +92,10 @@ const call = await connectChatGPTRealtime({
     voice: "juniper",
     transport: "wm",
     language: "en-US",
-    clientTools: [{ id: "timer" }],
   },
   onStateChange: (state) => console.log(state),
   onEvent: (event) => {
     if (event.type === "user_transcription_text") console.log(event);
-    if (event.type === "user_transcription_text") routeExternalToolRequest(event);
   },
 });
 
@@ -121,34 +140,18 @@ The resolved `ChatGPTRealtimeConnection` exposes:
 | `startListening()`, `stopListening()`, `resumeListening()` | Listening controls. |
 | `stopSpeaking()` | Interrupt current model speech. |
 | `relayMessage(text, metadata?)` | Inject a typed user message into GPT Live. |
-| `relayToolResult(callId, result)` | Return a structured external-tool result through `/wm`. |
 | `setInputMuted(boolean)`, `setOutputMuted(boolean)` | Local media controls. |
 | `close()` | Idempotently release all SDK-owned resources. |
 
 For push-to-talk, disable automatic barge-in, call `startListening()` on press,
-and `stopListening()` on release. `/wm` rejects arbitrary `clientTools`; the
-only accepted ids currently observed are `timer`, `stopwatch`,
-`precise_location`, and `led`. Application tools should consume final transcript
-events, execute through the application's existing server-side identity and
-permission boundary, then call `relayToolResult()`. Keep destructive actions
-behind a separate confirmation step: a model request is not user authorization.
+and `stopListening()` on release.
 
-The SDK intentionally has no separate "agent mode." The connection is always
-the native, full-duplex ChatGPT voice transport. Agent behavior belongs at the
-application layer: consume transcript/tool events, update your UI, and return
-tool results without replacing the live audio loop with turn-by-turn speech
-recognition and text-to-speech.
-
-To include camera video, request it in `mediaConstraints`; to send an existing
-camera or screen-share stream, pass `mediaStream`. Every track in that stream is
-added to the peer connection. When there is no video track, the helper adds the
-send-only video transceiver expected by the current ChatGPT transport.
-
-```ts
-await connectChatGPTRealtime({
-  mediaConstraints: { audio: true, video: { facingMode: "user" } },
-});
-```
+GPT Live currently does not support video or screen sharing. The browser helper
+rejects video constraints and streams with video tracks. Its peer connection
+still creates an inert send-only video transceiver because the observed private
+handshake expects that SDP m-line; this is transport compatibility, not a video
+feature. OpenAI documents video and screen sharing only for eligible subscribers
+using Advanced in supported mobile apps, not as a capability of this SDK.
 
 ## Session schema
 
@@ -160,26 +163,20 @@ core package converts them into the upstream wire keys shown below.
 | `transport` | endpoint selection | `"wm"` (GPT Live); `"vp"` and `"vps"` are explicit compatibility options |
 | `voice` | `voice` | `"juniper"` |
 | `voiceMode` | `voice_mode` | `"wingman"` for `/wm` |
-| `model` | `requested_default_model`, `model_slug` | empty for `/wm`, allowing the subscription to select GPT Live |
-| `advancedModel` | `model_slug_advanced` | `model`; advanced mode only |
+| `model` | `requested_default_model`, `model_slug` | Empty for `/wm`, allowing the subscription to select GPT Live; explicitly required for compatibility paths. |
+| `advancedModel` | `model_slug_advanced` | Private `vp` compatibility field; no product-feature guarantee. |
 | `language` | `language_code` | `null`; browser helper may pass locale |
 | `conversationId` | `conversation_id` | `null` for a new conversation |
 | `parentMessageId` | `parent_message_id` | omitted |
 | `timezone`, `timezoneOffsetMinutes` | `timezone`, `timezone_offset_min` | browser timezone; server fallback is UTC / `0` |
-| `clientTools` | `client_tools` | `[]`; closed ids only |
+| _(not configurable)_ | `client_tools` | Always `[]`; application tools are unsupported. |
 | `conversationMode` | `conversation_mode` | `{ "kind": "primary_assistant" }` |
 | `historyAndTrainingDisabled` | `history_and_training_disabled` | `false` for `/wm`; OpenAI currently denies `/wm` sessions when true |
 | `enableMessageStreaming` | `enable_message_streaming` | omitted for `/wm`; `true` for compatibility transports |
-| `modelSpeaksFirst` | `model_speaks_first` | omitted |
-| `reasoningEffort` | `backend_reasoning_effort` | `"instant"` for `/wm` |
-| `thinkingEffort` | `thinking_effort` | omitted |
-| `chatRequestToken` | `chatreq_token` | omitted |
-| `bidiSystemPromptOverride` | `bidi_system_prompt_override` | object; omitted |
-| `structuredSystemPromptPersonalityOverride` | `structured_system_prompt_personality_override` | object; omitted |
-| `delegationTransportOverride` | `delegation_transport_override` | object; omitted |
-| `jobsMockInterviewConfig` | `jobs_mock_interview_config` | object; omitted |
-| `systemPromptType` | `system_prompt_type` | omitted |
-| `extra` | merged verbatim | Forward-compatibility escape hatch. |
+
+The fixed `/wm` wire payload includes `backend_reasoning_effort: "instant"`.
+The SDK deliberately does not expose arbitrary private metadata, prompt
+overrides, delegation controls, or model-tool fields as supported features.
 
 `voice_session_id` and `voice_status_request_id` are generated per call. Use
 `buildChatGPTRealtimeSession()` when you need the exact wire object without
@@ -196,8 +193,7 @@ origin checks as `/responses`.
   "session": {
     "voice": "juniper",
     "transport": "wm",
-    "language": "en-US",
-    "clientTools": []
+    "language": "en-US"
   }
 }
 ```
@@ -209,7 +205,7 @@ Errors are JSON:
 | --- | --- |
 | `400` | `invalid_realtime_request` |
 | `401` | `not_authenticated` |
-| `403` | `origin_not_allowed` or `realtime_mode_not_allowed` |
+| `403` | `origin_not_allowed`, `realtime_mode_not_allowed`, or `realtime_transport_not_allowed` |
 | `413` | `realtime_request_too_large` |
 | `501` | `realtime_web_auth_required` when `/wm` has no server auth callback |
 | upstream / `502` | `realtime_request_failed` |
@@ -221,6 +217,7 @@ createChatGPTHandler({
   enableRealtime: true,
   realtime: {
     maxRequestBytes: 256 * 1024,
+    allowedTransports: ["wm"],
     allowedModes: ["wingman"],
     sessionDefaults: { transport: "wm", historyAndTrainingDisabled: false },
     getAuth: async ({ request }) => getUserBoundWebAuth(request),
@@ -237,9 +234,13 @@ posts to the selected ChatGPT endpoint:
 | `vp` | `POST https://chatgpt.com/realtime/vp?dcid=0` |
 | `vps` | `POST https://chatgpt.com/realtime/vps?dcid=0` |
 
-`wm` is the default because it is the current native GPT Live transport. Codex
-OAuth tokens do not authorize it; `getAuth` must return a short-lived token
-minted for the ChatGPT web client. `exchangeChatGPTRealtimeWebSession()` performs
+`wm` is the default because it is the currently observed GPT Live transport.
+The server permits only `wm` unless `realtime.allowedTransports` explicitly
+opts into a compatibility path. `vp` and `vps` are undocumented, may disappear,
+and do not make Advanced or Standard product features available through this
+SDK. Codex OAuth tokens do not authorize `wm`; `getAuth` must return a
+short-lived token minted for the ChatGPT web client.
+`exchangeChatGPTRealtimeWebSession()` performs
 that server-only exchange and validates the token client id.
 
 ## Data-channel schema
@@ -259,11 +260,11 @@ Observed event names exported in `CHATGPT_REALTIME_EVENT_TYPES`:
 | Area | Event types |
 | --- | --- |
 | State/control | `state_update`, `action_request`, `goodbye`, `close_request`, `close_ready`, `track_state`, `speaking_update` |
-| Conversation/streaming | `conversation_update`, `streaming_message_update`, `full_chat_message`, `chat_message_delta`, `relay_message`, `relay_message_processed`, `turn_context` |
+| Conversation/streaming | `conversation_update`, `streaming_message_update`, `full_chat_message`, `chat_message_delta`, `relay_message`, `relay_message_processed` |
 | Speech/text | `user_transcription_text`, `live_captioning_text` |
-| Tools/agents | `client_tool_invoke`, `client_tool_result`, `client_tool_update`, `tool_update`, `spawn_update` |
-| Settings/prompts | `update_settings_request`, `update_settings_result`, `get_bidi_system_prompt`, `bidi_system_prompt`, `client_metadata_update` |
-| Safety/usage/diagnostics | `moderation`, `url_moderation`, `bio_safety_review_update`, `usage_update`, `performance`, `startup_telemetry`, `client_metrics`, `wingman_session_debug`, `unknown` |
+
+This catalog is intentionally narrow. The parser passes unknown events through
+for forward compatibility, but their presence is not an SDK capability claim.
 
 Control messages use this shape:
 
@@ -275,9 +276,9 @@ Control messages use this shape:
 ```
 
 Known actions are `start_listening`, `stop_listening`, `stop_speaking`,
-`resume_listening`, and `relay_message`. A conversational relay is not an
-`action_request`; `createChatGPTRealtimeRelayMessage()` builds its exact message
-shape, and `createChatGPTRealtimeToolResult()` builds a structured result relay. Use
+`resume_listening`, and `relay_message`. A conversational text relay is not an
+`action_request`; `createChatGPTRealtimeRelayMessage()` builds the currently
+observed private message shape. It is not a function call or tool result. Use
 `createChatGPTRealtimeAction()`, `encodeChatGPTRealtimeEvent()`, and
 `parseChatGPTRealtimeEvent()` for a custom transport.
 

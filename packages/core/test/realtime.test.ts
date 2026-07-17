@@ -3,7 +3,6 @@ import {
   buildChatGPTRealtimeSession,
   createChatGPTRealtimeAction,
   createChatGPTRealtimeRelayMessage,
-  createChatGPTRealtimeToolResult,
   createChatGPTRealtimeCall,
   encodeChatGPTRealtimeEvent,
   exchangeChatGPTRealtimeWebSession,
@@ -14,30 +13,30 @@ import {
 import { createMockFetch, makeJwt } from "./helpers.ts";
 
 describe("ChatGPT Realtime", () => {
-  test("builds advanced and standard session payloads", () => {
+  test("builds GPT Live and explicit compatibility session payloads", () => {
     const advanced = buildChatGPTRealtimeSession({
       voice: "ember",
       language: "fr-FR",
-      clientTools: [{ id: "timer" }],
-      modelSpeaksFirst: true,
     });
     expect(advanced).toMatchObject({
       voice: "ember",
       voice_mode: "wingman",
       model_slug: "",
       language_code: "fr-FR",
-      model_speaks_first: true,
     });
     expect(advanced.voice_session_id).toBe(advanced.voice_status_request_id);
-    expect(advanced.client_tools).toHaveLength(1);
+    expect(advanced.client_tools).toEqual([]);
 
-    const standard = buildChatGPTRealtimeSession({ transport: "vps", voiceMode: "standard", model: "gpt-4o-mini" });
+    const standard = buildChatGPTRealtimeSession({ transport: "vps", voiceMode: "standard", model: "explicit-compat-model" });
     expect(standard.voice_mode).toBe("standard");
-    expect(standard.model_slug).toBe("gpt-4o-mini");
+    expect(standard.model_slug).toBe("explicit-compat-model");
     expect(standard.model_slug_advanced).toBeUndefined();
     expect(() => buildChatGPTRealtimeSession({ voice: "" })).toThrow("`voice`");
     expect(() => buildChatGPTRealtimeSession({ timezoneOffsetMinutes: 2000 })).toThrow("timezoneOffsetMinutes");
     expect(() => buildChatGPTRealtimeSession({ historyAndTrainingDisabled: true })).toThrow("must be false");
+    expect(() => buildChatGPTRealtimeSession({ transport: "wm", voiceMode: "advanced" })).toThrow("must be `wingman`");
+    expect(() => buildChatGPTRealtimeSession({ transport: "bogus" as "wm" })).toThrow("`transport`");
+    expect(() => buildChatGPTRealtimeSession({ transport: "vp" })).toThrow("`model` is required");
   });
 
   test("posts multipart SDP with server-side ChatGPT auth", async () => {
@@ -160,10 +159,6 @@ describe("ChatGPT Realtime", () => {
     expect(createChatGPTRealtimeRelayMessage("hello")).toMatchObject({
       type: "relay_message",
       payload: { type: "relay_message", message: { content: { parts: ["hello"] } } },
-    });
-    expect(createChatGPTRealtimeToolResult("call-1", { status: "done" })).toMatchObject({
-      type: "relay_message",
-      payload: { message: { metadata: { external_tool_result: true } } },
     });
   });
 });
