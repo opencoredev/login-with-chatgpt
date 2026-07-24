@@ -13,8 +13,8 @@
 - Works with the Vercel AI SDK: `streamText()` straight from the client
 - Generates and edits images with size, quality, format, masks, and streaming previews
 - Experimental GPT Live `/wm` audio over WebRTC, with interruption controls
-  and explicit GPT Live → application-agent handoffs; requires a separate
-  server-held ChatGPT web session because Codex OAuth does not grant voice access
+  and an explicit voice-only limitation; requires a separate server-held
+  ChatGPT web session because Codex OAuth does not grant voice access
 - Open source, MIT licensed
 
 The handler keeps tokens behind the proxy path by default. The browser gets a session cookie, asks your backend which models the account has, and streams from there.
@@ -41,7 +41,7 @@ npm and pnpm work too. Everything ships as ESM with types for Node 18+.
 Start with the [quickstart](./docs/content/docs/quickstart.mdx). The [security model](./docs/content/docs/concepts/security.mdx) explains how tokens stay on your server, and the [production checklist](./docs/content/docs/guides/production.mdx) is there for when you deploy.
 
 For the experimental subscription-backed speech-to-speech transport, its
-native handoff lifecycle, limitations, interruption controls, and captions, see
+limitations, interruption controls, and captions, see
 [experimental ChatGPT voice transport](./docs/content/docs/guides/realtime-voice.mdx).
 
 ## Agent skill

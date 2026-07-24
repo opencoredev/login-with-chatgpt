@@ -6,12 +6,10 @@ import {
   createChatGPTRealtimeToolUpdate,
   encodeChatGPTRealtimeEvent,
   getChatGPTRealtimePayload,
-  parseChatGPTRealtimeHandoffRequest,
   parseChatGPTRealtimeEvent,
   parseChatGPTRealtimeToolInvocation,
   type ChatGPTRealtimeAction,
   type ChatGPTRealtimeEvent,
-  type ChatGPTRealtimeHandoffRequest,
   type ChatGPTRealtimeSessionOptions,
   type ChatGPTRealtimeState,
   type ChatGPTRealtimeToolInvocation,
@@ -50,14 +48,8 @@ export interface ConnectChatGPTRealtimeOptions {
   signal?: AbortSignal;
   onEvent?: (event: ChatGPTRealtimeEvent) => void;
   /**
-   * Called only for the native desktop-style delegation item. This is the
-   * supported integration point for application tools; transcript text never
-   * triggers it.
-   */
-  onHandoffRequest?: (handoff: ChatGPTRealtimeHandoffRequest) => void | Promise<void>;
-  /**
-   * Compatibility hook for reserved first-party client tools. `/wm` rejects
-   * arbitrary application tool IDs; prefer `onHandoffRequest`.
+   * Compatibility hook for ChatGPT's reserved first-party client tools.
+   * `/wm` rejects arbitrary application tool IDs.
    */
   onToolInvocation?: (
     invocation: ChatGPTRealtimeToolInvocation,
@@ -161,10 +153,6 @@ export async function connectChatGPTRealtime(
       if (event.type === "goodbye" || event.type === "close_ready") {
         remoteClosing = true;
         setState("halted");
-      }
-      const handoff = parseChatGPTRealtimeHandoffRequest(event);
-      if (handoff) {
-        void Promise.resolve(options.onHandoffRequest?.(handoff)).catch(fail);
       }
       const invocation = parseChatGPTRealtimeToolInvocation(event);
       if (invocation) {

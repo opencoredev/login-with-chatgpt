@@ -10,7 +10,6 @@ import {
   exchangeChatGPTRealtimeWebSession,
   getChatGPTRealtimePayload,
   parseChatGPTRealtimeEvent,
-  parseChatGPTRealtimeHandoffRequest,
   parseChatGPTRealtimeToolInvocation,
   resolveConfig,
 } from "../src/index.ts";
@@ -179,7 +178,7 @@ describe("ChatGPT Realtime", () => {
     });
   });
 
-  test("parses native tool calls and builds structured lifecycle events", () => {
+  test("parses client-tool calls and builds structured lifecycle events", () => {
     expect(parseChatGPTRealtimeToolInvocation({
       type: "client_tool_invoke",
       payload: {
@@ -214,31 +213,4 @@ describe("ChatGPT Realtime", () => {
     });
   });
 
-  test("parses native desktop handoffs without treating captions as tools", () => {
-    expect(parseChatGPTRealtimeHandoffRequest({
-      type: "thread/realtime/itemAdded",
-      params: {
-        item: {
-          type: "handoff_request",
-          handoff_id: "handoff-1",
-          input_transcript: "List my recent emails",
-          active_transcript: [
-            { role: "user", text: "Can you help with email?" },
-            { role: "assistant", text: "Yes." },
-          ],
-        },
-      },
-    })).toEqual({
-      handoffId: "handoff-1",
-      inputTranscript: "List my recent emails",
-      activeTranscript: [
-        { role: "user", text: "Can you help with email?" },
-        { role: "assistant", text: "Yes." },
-      ],
-    });
-    expect(parseChatGPTRealtimeHandoffRequest({
-      type: "user_transcription_text",
-      text: "List my recent emails",
-    })).toBeUndefined();
-  });
 });

@@ -34,7 +34,7 @@ export interface ChatGPTRealtimeSessionOptions {
   timezoneOffsetMinutes?: number;
   /**
    * Reserved for ChatGPT's first-party device tools. `/wm` rejects arbitrary
-   * application function IDs; use native handoff requests for product tools.
+   * application function IDs.
    */
   clientTools?: readonly never[];
   conversationMode?: Record<string, unknown>;
@@ -192,17 +192,6 @@ export interface ChatGPTRealtimeToolInvocation {
   arguments: Record<string, unknown>;
 }
 
-export interface ChatGPTRealtimeTranscriptEntry {
-  role: string;
-  text: string;
-}
-
-export interface ChatGPTRealtimeHandoffRequest {
-  handoffId: string;
-  inputTranscript: string;
-  activeTranscript: ChatGPTRealtimeTranscriptEntry[];
-}
-
 export interface ChatGPTRealtimeToolInvokeEvent extends ChatGPTRealtimeEvent {
   type: "client_tool_invoke";
   call_id?: string;
@@ -230,7 +219,7 @@ export const CHATGPT_REALTIME_EVENT_TYPES = [
   "relay_message_processed", "track_state", "full_chat_message",
   "chat_message_delta", "live_captioning_text", "speaking_update",
   "user_transcription_text", "client_tool_invoke", "client_tool_result",
-  "client_tool_update", "handoff_request", "thread/realtime/itemAdded",
+  "client_tool_update",
 ] as const;
 
 export const CHATGPT_REALTIME_PATHS: Record<ChatGPTRealtimeTransport, string> = {
@@ -272,7 +261,7 @@ export function buildChatGPTRealtimeSession(
   }
   if (options.clientTools?.length) {
     throw new TypeError(
-      "`clientTools` cannot contain application tools: ChatGPT `/wm` accepts only reserved first-party device tool IDs. Use `onHandoffRequest` for product tools.",
+      "`clientTools` cannot contain application tools: ChatGPT `/wm` accepts only reserved first-party device tool IDs.",
     );
   }
   if (options.timezoneOffsetMinutes !== undefined &&
@@ -407,7 +396,7 @@ export function createChatGPTRealtimeRelayMessage(
   return { type: "relay_message", payload: { type: "relay_message", message } };
 }
 
-/** Parse a completed native client-tool invocation without inspecting transcripts. */
+/** Parse a completed client-tool invocation without inspecting transcripts. */
 export function parseChatGPTRealtimeToolInvocation(
   event: unknown,
 ): ChatGPTRealtimeToolInvocation | undefined {
@@ -423,54 +412,7 @@ export function parseChatGPTRealtimeToolInvocation(
   return { callId, name, arguments: args };
 }
 
-/**
- * Parses the explicit GPT Live → agent delegation used by the ChatGPT desktop
- * app. Transcript/caption events never produce a handoff.
- */
-export function parseChatGPTRealtimeHandoffRequest(
-  event: unknown,
-): ChatGPTRealtimeHandoffRequest | undefined {
-  if (!isRecord(event)) return undefined;
-  const payload = isRecord(event["payload"]) ? event["payload"] : undefined;
-  const params = isRecord(event["params"]) ? event["params"] : undefined;
-  const candidates = [
-    event,
-    isRecord(event["item"]) ? event["item"] : undefined,
-    payload,
-    isRecord(payload?.["item"]) ? payload["item"] : undefined,
-    params,
-    isRecord(params?.["item"]) ? params["item"] : undefined,
-  ];
-  for (const candidate of candidates) {
-    if (!candidate || candidate["type"] !== "handoff_request") continue;
-    const handoffId = candidate["handoff_id"];
-    const inputTranscript = candidate["input_transcript"];
-    const activeTranscript = candidate["active_transcript"];
-    if (
-      typeof handoffId !== "string" ||
-      !handoffId ||
-      typeof inputTranscript !== "string" ||
-      !inputTranscript.trim() ||
-      !Array.isArray(activeTranscript)
-    ) {
-      return undefined;
-    }
-    const transcript = activeTranscript.flatMap((entry) => {
-      if (!isRecord(entry) || typeof entry["role"] !== "string" || typeof entry["text"] !== "string") {
-        return [];
-      }
-      return [{ role: entry["role"], text: entry["text"] }];
-    });
-    return {
-      handoffId,
-      inputTranscript: inputTranscript.trim(),
-      activeTranscript: transcript,
-    };
-  }
-  return undefined;
-}
-
-/** Complete a native client-tool call with a structured application result. */
+/** Complete a client-tool call with a structured application result. */
 export function createChatGPTRealtimeToolResult(
   callId: string,
   result: Record<string, unknown>,

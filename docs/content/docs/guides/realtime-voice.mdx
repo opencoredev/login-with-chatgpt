@@ -19,12 +19,14 @@ credentials never enter the WebRTC/browser response.
   instead.
 </Callout>
 
-<Callout type="warn" title="Tools use native handoff">
+<Callout type="warn" title="Direct /wm sessions are voice-only">
   `/wm` accepts only ChatGPT's reserved device-tool IDs (`timer`, `stopwatch`,
   `precise_location`, and `led`) in `client_tools`; arbitrary application
-  function schemas are rejected. Product tools must use the explicit
-  `handoff_request` emitted by GPT Live and execute through an authenticated
-  application agent. Caption and transcript events must not trigger tools.
+  function schemas are rejected. The desktop app's thread-scoped Realtime
+  mediation is a separate app-server protocol; its handoff items are not
+  emitted to a direct browser `/wm` data channel. Do not turn caption or
+  transcript events into tool calls. Expose a separate authenticated agent
+  mode or use a supported tool-capable Realtime API.
 </Callout>
 
 OpenAI currently documents three ChatGPT product options: **Live** (GPT-Live-1
@@ -95,14 +97,6 @@ const call = await connectChatGPTRealtime({
   onEvent: (event) => {
     if (event.type === "user_transcription_text") console.log(event);
   },
-  async onHandoffRequest(handoff) {
-    // Run only the explicit delegated request through your authenticated agent.
-    // Do not start tools from onEvent transcript or caption messages.
-    await runAgentForCurrentUser({
-      request: handoff.inputTranscript,
-      activeTranscript: handoff.activeTranscript,
-    });
-  },
 });
 
 // Explicit controls are useful for buttons and push-to-talk.
@@ -146,7 +140,6 @@ The resolved `ChatGPTRealtimeConnection` exposes:
 | `startListening()`, `stopListening()`, `resumeListening()` | Listening controls. |
 | `stopSpeaking()` | Interrupt current model speech. |
 | `relayMessage(text, metadata?)` | Inject a typed user message into GPT Live. |
-| `onHandoffRequest` option | Receives explicit GPT Live → application-agent delegations. |
 | `setInputMuted(boolean)`, `setOutputMuted(boolean)` | Local media controls. |
 | `close()` | Idempotently release all SDK-owned resources. |
 
@@ -176,7 +169,7 @@ core package converts them into the upstream wire keys shown below.
 | `conversationId` | `conversation_id` | `null` for a new conversation |
 | `parentMessageId` | `parent_message_id` | omitted |
 | `timezone`, `timezoneOffsetMinutes` | `timezone`, `timezone_offset_min` | browser timezone; server fallback is UTC / `0` |
-| `clientTools` | `client_tools` | Must be empty. `/wm` rejects arbitrary application IDs; use `onHandoffRequest`. |
+| `clientTools` | `client_tools` | Must be empty. `/wm` rejects arbitrary application IDs. |
 | `conversationMode` | `conversation_mode` | `{ "kind": "primary_assistant" }` |
 | `historyAndTrainingDisabled` | `history_and_training_disabled` | `false` for `/wm`; OpenAI currently denies `/wm` sessions when true |
 | `enableMessageStreaming` | `enable_message_streaming` | `true` by default |
@@ -271,18 +264,10 @@ Observed event names exported in `CHATGPT_REALTIME_EVENT_TYPES`:
 | State/control | `state_update`, `action_request`, `goodbye`, `close_request`, `close_ready`, `track_state`, `speaking_update` |
 | Conversation/streaming | `conversation_update`, `streaming_message_update`, `full_chat_message`, `chat_message_delta`, `relay_message`, `relay_message_processed` |
 | Speech/text | `user_transcription_text`, `live_captioning_text` |
-| Native delegation | `handoff_request`, `thread/realtime/itemAdded` |
 | Reserved client tools | `client_tool_invoke`, `client_tool_update`, `client_tool_result` |
 
 This catalog is intentionally narrow. The parser passes unknown events through
 for forward compatibility, but their presence is not an SDK capability claim.
-
-`parseChatGPTRealtimeHandoffRequest()` normalizes either a direct
-`handoff_request` or the desktop app's `thread/realtime/itemAdded` envelope.
-The browser helper calls `onHandoffRequest()` only for that item. It never
-turns `user_transcription_text` or `live_captioning_text` into a tool request.
-Your application agent can then use its normal tools, authorization boundaries,
-pending states, and confirmation UI.
 
 The client-tool parsing and result helpers remain available for compatibility
 with ChatGPT's reserved first-party tools, but the SDK does not advertise
