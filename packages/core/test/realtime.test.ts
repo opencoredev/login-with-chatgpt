@@ -10,6 +10,7 @@ import {
   exchangeChatGPTRealtimeWebSession,
   getChatGPTRealtimePayload,
   parseChatGPTRealtimeEvent,
+  parseChatGPTRealtimeAppServerEvent,
   parseChatGPTRealtimeToolInvocation,
   resolveConfig,
 } from "../src/index.ts";
@@ -211,6 +212,30 @@ describe("ChatGPT Realtime", () => {
       call_id: "call-1",
       result: { status: "sent", sent: true },
     });
+  });
+
+  test("parses desktop-style app-server lifecycle events", () => {
+    expect(parseChatGPTRealtimeAppServerEvent({
+      type: "tool.pending_confirmation",
+      callId: "call-1",
+      name: "create_record",
+      review: { title: "Review me" },
+    })).toEqual({
+      type: "tool.pending_confirmation",
+      callId: "call-1",
+      name: "create_record",
+      review: { title: "Review me" },
+    });
+    expect(parseChatGPTRealtimeAppServerEvent({
+      type: "tool.pending_confirmation",
+      callId: "call-1",
+      review: {},
+    })).toBeUndefined();
+    expect(parseChatGPTRealtimeAppServerEvent({
+      type: "error",
+    })).toBeUndefined();
+    expect(parseChatGPTRealtimeAppServerEvent({ type: "unknown" })).toBeUndefined();
+    expect(parseChatGPTRealtimeAppServerEvent("not-an-event")).toBeUndefined();
   });
 
 });

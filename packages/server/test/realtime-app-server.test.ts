@@ -101,14 +101,139 @@ describe("ChatGPTRealtimeAppServerSession", () => {
       review: { draftId: "draft_1", to: ["person@example.com"] },
     });
 
-    await session.resolveConfirmation("call_1", { approved: true });
+    const confirmed = await session.resolveConfirmation("call_1", { approved: true });
 
     expect(confirmations).toEqual([{ approved: true }]);
+    expect(confirmed).toEqual({ output: { status: "sent", draftId: "draft_1" } });
     expect(wire).toHaveLength(1);
     expect(events.at(-1)).toEqual({
       type: "tool.completed",
       callId: "call_1",
       name: "email_request_send_draft",
+    });
+  });
+
+  test("claims confirmation atomically and prevents duplicate execution", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let confirmations = 0;
+    const session = new ChatGPTRealtimeAppServerSession({
+      tokens: { accessToken: "access", accountId: "acct_123" },
+      tools: [{
+        type: "function",
+        name: "apply_change",
+        description: "Apply a pending change after confirmation.",
+        inputSchema: { type: "object" },
+      }],
+      executeTool: async () => ({
+        output: { status: "pending_confirmation" },
+        pendingConfirmation: { review: { changeId: "change_1" } },
+      }),
+      confirmTool: async () => {
+        confirmations += 1;
+        await gate;
+        return { output: { status: "applied" } };
+      },
+    });
+    (session as any).send = () => {};
+    await (session as any).handleTool(1, {
+      callId: "call_1",
+      tool: "apply_change",
+      arguments: {},
+    });
+
+    const first = session.resolveConfirmation("call_1", { approved: true });
+    await expect(
+      session.resolveConfirmation("call_1", { approved: true }),
+    ).rejects.toThrow("no longer pending");
+    release();
+    await first;
+    expect(confirmations).toBe(1);
+  });
+
+  test("restores a pending confirmation after an application failure", async () => {
+    let attempts = 0;
+    const session = new ChatGPTRealtimeAppServerSession({
+      tokens: { accessToken: "access", accountId: "acct_123" },
+      tools: [{
+        type: "function",
+        name: "apply_change",
+        description: "Apply a pending change after confirmation.",
+        inputSchema: { type: "object" },
+      }],
+      executeTool: async () => ({
+        output: { status: "pending_confirmation" },
+        pendingConfirmation: { review: { changeId: "change_1" } },
+      }),
+      confirmTool: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("temporary failure");
+        return { output: { status: "applied" } };
+      },
+    });
+    (session as any).send = () => {};
+    await (session as any).handleTool(1, {
+      callId: "call_1",
+      tool: "apply_change",
+      arguments: {},
+    });
+
+    await expect(
+      session.resolveConfirmation("call_1", { approved: true }),
+    ).rejects.toThrow("temporary failure");
+    await expect(
+      session.resolveConfirmation("call_1", { approved: true }),
+    ).resolves.toMatchObject({ output: { status: "applied" } });
+    expect(attempts).toBe(2);
+  });
+
+  test("does not turn a completed confirmation into a failure when speech fails", async () => {
+    const events: RealtimeBridgeEvent[] = [];
+    const session = new ChatGPTRealtimeAppServerSession({
+      tokens: { accessToken: "access", accountId: "acct_123" },
+      tools: [{
+        type: "function",
+        name: "apply_change",
+        description: "Apply a pending change after confirmation.",
+        inputSchema: { type: "object" },
+      }],
+      executeTool: async () => ({
+        output: { status: "pending_confirmation" },
+        pendingConfirmation: { review: { changeId: "change_1" } },
+      }),
+      confirmTool: async () => ({
+        output: { status: "applied" },
+        speech: "The change was applied.",
+      }),
+    });
+    (session as any).send = () => {};
+    (session as any).threadId = "thread_1";
+    (session as any).expectResult = async () => {
+      throw new Error("voice transport closed");
+    };
+    session.onEvent((event) => events.push(event));
+    await (session as any).handleTool(1, {
+      callId: "call_1",
+      tool: "apply_change",
+      arguments: {},
+    });
+
+    await expect(
+      session.resolveConfirmation("call_1", { approved: true }),
+    ).resolves.toEqual({
+      output: { status: "applied" },
+      speech: "The change was applied.",
+    });
+    expect(events).toContainEqual({
+      type: "error",
+      message: "Confirmation completed, but its spoken acknowledgement failed: voice transport closed",
+    });
+    expect(events.at(-1)).toEqual({
+      type: "tool.completed",
+      callId: "call_1",
+      name: "apply_change",
     });
   });
 });

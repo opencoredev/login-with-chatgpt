@@ -29,7 +29,7 @@ export interface RealtimeToolResult {
 }
 
 export interface RealtimeConfirmationResult {
-  /** JSON-serializable result emitted to application listeners. */
+  /** JSON-serializable application result returned by `resolveConfirmation()`. */
   output: unknown;
   /** Optional short acknowledgement spoken through the native Live session. */
   speech?: string;
@@ -224,7 +224,10 @@ export class ChatGPTRealtimeAppServerSession {
    * already completed with a pending result, so native Live remains responsive
    * while the UI waits. The bridge never assumes approval from speech.
    */
-  async resolveConfirmation(callId: string, confirmation: unknown): Promise<void> {
+  async resolveConfirmation(
+    callId: string,
+    confirmation: unknown,
+  ): Promise<RealtimeConfirmationResult> {
     const pending = this.confirmations.get(callId);
     if (!pending) throw new Error("Tool confirmation is no longer pending.");
     if (!this.options.confirmTool) throw new Error("No confirmTool handler is configured.");
@@ -243,8 +246,20 @@ export class ChatGPTRealtimeAppServerSession {
       this.confirmations.set(callId, pending);
       throw error;
     }
-    if (confirmed.speech) await this.speak(confirmed.speech);
+    assertJsonSerializable(confirmed.output, "Confirmation output");
+    if (confirmed.speech) {
+      try {
+        await this.speak(confirmed.speech);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.emit({
+          type: "error",
+          message: `Confirmation completed, but its spoken acknowledgement failed: ${message}`,
+        });
+      }
+    }
     this.emit({ type: "tool.completed", callId, name: pending.context.name });
+    return confirmed;
   }
 
   async speak(text: string): Promise<void> {
@@ -353,12 +368,16 @@ export class ChatGPTRealtimeAppServerSession {
       } else {
         this.send({ id, error: { code: -32000, message } });
       }
-      this.emit({
-        type: "tool.failed",
-        callId: typeof params["callId"] === "string" ? params["callId"] : undefined,
-        name: typeof params["tool"] === "string" ? params["tool"] : undefined,
-        message,
-      });
+      if (method === "item/tool/call") {
+        this.emit({
+          type: "tool.failed",
+          callId: typeof params["callId"] === "string" ? params["callId"] : undefined,
+          name: typeof params["tool"] === "string" ? params["tool"] : undefined,
+          message,
+        });
+      } else {
+        this.emit({ type: "error", message });
+      }
     }
   }
 
@@ -385,6 +404,7 @@ export class ChatGPTRealtimeAppServerSession {
     const result = await this.options.executeTool(context);
     if (result.pendingConfirmation) {
       if (!this.options.confirmTool) throw new Error("Tool requested confirmation without confirmTool.");
+      assertJsonSerializable(result.pendingConfirmation.review, "Confirmation review");
       // A JSON-RPC request left open blocks subsequent realtime handoffs and
       // wedges the native session in "thinking". Return the structured pending
       // result now; only the consequential application action stays gated.
@@ -487,14 +507,17 @@ function speakToolSpec(): RealtimeDynamicTool {
 }
 
 function dynamicToolResponse(output: unknown, success = true): JsonObject {
-  const text = JSON.stringify(output);
-  if (text === undefined) {
-    throw new TypeError("Dynamic tool output must be JSON-serializable.");
-  }
+  const text = assertJsonSerializable(output, "Dynamic tool output");
   return {
     success,
     contentItems: [{ type: "inputText", text }],
   };
+}
+
+function assertJsonSerializable(output: unknown, label: string): string {
+  const text = JSON.stringify(output);
+  if (text === undefined) throw new TypeError(`${label} must be JSON-serializable.`);
+  return text;
 }
 
 export function chatgptPlanType(tokens: ChatGPTTokens): string | undefined {

@@ -3,7 +3,7 @@
 Backend handler for [Login with ChatGPT](../../README.md).
 
 It exposes login, status, session, logout, model discovery, responses proxy,
-and experimental private WebRTC voice signaling routes from one Web-standard
+and experimental private WebRTC voice and tool routes from one Web-standard
 `(Request) => Response` handler.
 
 ```ts
@@ -22,6 +22,12 @@ const auth = createChatGPTHandler({
     getAuth: async ({ request }) => getChatGPTLiveAuth(request),
     allowedTransports: ["wm"],
     sessionDefaults: { transport: "wm", historyAndTrainingDisabled: false },
+    appServer: {
+      tools,
+      allowedModels: (model) => allowedExecutionModels.has(model),
+      executeTool: async (context) => executeValidatedTool(context),
+      confirmTool: async (context) => confirmPendingAction(context),
+    },
   },
 });
 
@@ -43,6 +49,10 @@ Bun.serve({
 | `GET` | `/models` | Return available model slugs for the signed-in account. |
 | `POST` | `/responses` | Proxy an authenticated streaming responses request. |
 | `POST` | `/realtime` | Experimentally exchange a browser WebRTC offer through a private ChatGPT route. |
+| `POST` | `/realtime/app-server` | Start native GPT Live with server-owned application tools. |
+| `GET` | `/realtime/app-server/:id/events` | Stream tool and confirmation lifecycle events as NDJSON. |
+| `POST` | `/realtime/app-server/:id/confirm` | Resolve a pending action through application confirmation. |
+| `DELETE` | `/realtime/app-server/:id` | Stop the Live session and app-server process. |
 
 ## Helpers
 
@@ -52,32 +62,36 @@ const models = await auth.getModels(request);
 const proxyFetch = auth.proxyFetch(request);
 ```
 
-For native GPT Live audio plus application tools, use the server-only
-`ChatGPTRealtimeAppServerSession`. It mirrors the desktop app-server handoff
-path without monitoring transcripts:
+For native GPT Live audio plus application tools, configure
+`realtime.appServer` as above, then use the core browser helper:
 
 ```ts
-import { ChatGPTRealtimeAppServerSession } from "@opencoredev/loginwithchatgpt-server";
+import { connectChatGPTRealtimeAppServer } from "@opencoredev/loginwithchatgpt-core";
 
-const live = new ChatGPTRealtimeAppServerSession({
-  tokens: await loadEncryptedUserTokens(user.id),
-  refreshTokens: () => refreshEncryptedUserTokens(user.id),
-  tools,
-  executeTool,
-  confirmTool,
+let pendingCallId: string | undefined;
+const live = await connectChatGPTRealtimeAppServer({
+  session: { voice: "vale", model: selectedModelSlug },
+  onBridgeEvent(event) {
+    if (event.type === "tool.pending_confirmation") {
+      pendingCallId = event.callId;
+      renderConfirmation(event.review);
+    }
+  },
 });
 
-const answerSdp = await live.start({
-  sdp: offerSdp,
-  voice: "vale",
-  model: "gpt-5.6-luna",
-});
+async function approvePending() {
+  if (!pendingCallId) throw new Error("No action is waiting for confirmation.");
+  await live.resolveConfirmation(pendingCallId, { approved: true });
+  pendingCallId = undefined;
+}
+
+// Bind approvePending to an explicit application UI action.
+onUnmount(() => live.close());
 ```
 
-Keep the instance in a user-scoped backend store and expose only an opaque id,
-SDP answer, safe status events, and an authenticated confirmation endpoint.
-Propagate the selected model to `start()` so delegated turns use the matching
-model entitlement. See the
+The handler owns the user-scoped process, opaque session id, event stream,
+model propagation, timeout, and cleanup. `ChatGPTRealtimeAppServerSession`
+remains exported for custom backends that need the lower-level protocol. See the
 [Realtime voice guide](../../docs/content/docs/guides/realtime-voice.mdx).
 
 ## Security defaults
@@ -86,10 +100,10 @@ model entitlement. See the
   session cookie is HttpOnly and HMAC-signed.
 - Normal app code uses `/responses`, `/models`, or `proxyFetch(request)`, so
   raw bearer tokens stay inside the handler.
-- `/realtime` accepts only session options and SDP; it never returns OAuth
+- Realtime start routes accept only session options and SDP; they never return OAuth
   material to the browser.
 - Direct `/wm` accepts only reserved first-party client tools. Arbitrary
-  application tools require the separate server-only app-server bridge.
+  application tools use the separate server-owned app-server bridge.
   Revalidate every invocation against an allowlist under the authenticated
   application user and require explicit UI approval for consequential actions.
 - `/realtime` permits only the experimental `wm` transport by default. The

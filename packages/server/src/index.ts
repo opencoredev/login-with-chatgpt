@@ -4,8 +4,9 @@
  * Backend that hosts the Login with ChatGPT flow. Returns a single
  * Web-standard `(Request) => Response` handler you mount at a base path; it
  * exposes device login, status polling, logout, model discovery, and an
- * authenticated Codex responses proxy. Sessions are cookie-based and tokens
- * stay server-side.
+ * authenticated Codex responses proxy, plus opt-in private Realtime voice and
+ * server-owned tool routes. Sessions are cookie-based and tokens stay
+ * server-side.
  */
 
 export {
@@ -17,6 +18,9 @@ export {
   type RateLimitBucket,
   type ResponsesProxyPolicy,
   type ResponsesRateLimit,
+  type RealtimeAppServerConfirmationContext,
+  type RealtimeAppServerPolicy,
+  type RealtimeAppServerToolContext,
   type RealtimeProxyPolicy,
 } from "./handler.ts";
 export {

@@ -118,10 +118,66 @@ Success is `201 application/sdp`. `session` accepts the complete schema in
 | `413` | `realtime_request_too_large`. |
 | upstream / `502` | `realtime_request_failed`, with bounded upstream detail. |
 
+## App-server Realtime routes
+
+These routes are present only when `realtime.appServer` is configured. They use
+the authenticated Codex session managed by the handler and require a Node/Bun
+server with the `codex` executable. They do not use `realtime.getAuth`.
+
+### `POST /realtime/app-server`
+
+Starts native GPT Live audio plus desktop-style tool handoffs:
+
+```json
+{
+  "sdp": "v=0\r\n…",
+  "session": { "voice": "vale", "model": "selected-model-slug" }
+}
+```
+
+```json title="201"
+{
+  "sessionId": "opaque-live-session-id",
+  "sdp": "v=0\r\n…"
+}
+```
+
+Only schemas configured in `realtime.appServer.tools` are exposed. The handler
+closes an older Live process owned by the same login session before starting a
+new one.
+
+### `GET /realtime/app-server/:id/events`
+
+Streams `application/x-ndjson` events: `session.started`, `session.closed`,
+`handoff`, `tool.running`, `tool.completed`, `tool.pending_confirmation`,
+`tool.failed`, `error`, and `keepalive`. A pending-confirmation event contains
+the application's safe `review` payload, not credentials or raw tokens.
+Lifecycle events emitted before the browser opens the stream are queued in a
+bounded server-side buffer and delivered when it subscribes.
+
+### `POST /realtime/app-server/:id/confirm`
+
+```json
+{
+  "callId": "tool-call-id",
+  "confirmation": { "approved": true }
+}
+```
+
+The confirmation value is application-defined. The configured `confirmTool`
+must re-read the pending resource, verify ownership, enforce idempotency, and
+perform the action. Spoken approval is never substituted for this request.
+
+### `DELETE /realtime/app-server/:id`
+
+Stops the WebRTC Realtime thread, terminates app-server, and removes temporary
+server credentials. Logout also closes every Live process owned by that login
+session.
+
 ## CSRF rules
 
-All non-GET routes (`/login`, `/logout`, `/responses`, `/realtime`) check the `Origin`
-header on browser requests:
+All non-GET routes, including direct and app-server Realtime routes, check the
+`Origin` header on browser requests:
 
 - Same-origin requests and origins listed in `allowedOrigins` pass.
 - Other origins get `403 { "error": "origin_not_allowed" }`.

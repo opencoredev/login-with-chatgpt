@@ -43,7 +43,7 @@ those APIs. The routes it serves are documented in [HTTP routes](routes.mdx).
 | `sessionTtlMs` | `number` | `2_592_000_000` (30 days) | Session and cookie lifetime. |
 | `defaultModel` | `string` | `"gpt-5.5"` | Injected when a `/responses` body omits `model`. |
 | `enableResponsesProxy` | `boolean` | `true` | `false` disables the `/responses` **and** `/models` routes. |
-| `enableRealtime` | `boolean` | `true` | `false` disables the `/realtime` signaling route. |
+| `enableRealtime` | `boolean` | `true` | `false` disables both direct and app-server Realtime routes. |
 | `realtime` | `RealtimeProxyPolicy` | `{}` | Experimental private voice signaling policy. |
 | `responsesProxy` | `ResponsesProxyPolicy` | `{}` | Guardrails below. |
 | `allowedOrigins` | `readonly string[]` | `[]` | Extra origins allowed on cookie-authenticated non-GET routes. |
@@ -66,6 +66,31 @@ those APIs. The routes it serves are documented in [HTTP routes](routes.mdx).
 | `allowedTransports` | `readonly ("wm" \| "vp" \| "vps")[]` | `["wm"]` | Undocumented compatibility transports require explicit opt-in. |
 | `allowedModes` | `readonly ("wingman" \| "advanced" \| "standard")[]` | unrestricted | Disallowed requests get `403 realtime_mode_not_allowed`. |
 | `sessionDefaults` | `ChatGPTRealtimeSessionOptions` | `{}` | Defaults merged before browser options. |
+| `getAuth` | callback | unset | Supplies server-held ChatGPT web auth for direct `/wm`; Codex login tokens are intentionally not reused for that route. |
+| `appServer` | `RealtimeAppServerPolicy` | unset | Enables desktop-style native handoffs and arbitrary server-side tools. Requires Node/Bun and the `codex` executable. |
+
+### `realtime.appServer`
+
+| Option | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `tools` | `readonly RealtimeDynamicTool[]` | required | Server-owned function names, descriptions, and JSON input schemas. |
+| `executeTool` | callback | required | Revalidate arguments and execute under `loginSessionId` / the authenticated request snapshot. |
+| `confirmTool` | callback | unset | Required when any tool returns `pendingConfirmation`; called only by the authenticated confirmation route. |
+| `allowedModels` | `readonly string[] \| (model: string) => boolean` | all allowed | Restricts the delegated execution model selected by the browser. |
+| `defaultModel` | `string` | unset | Delegated execution model when the browser omits one. |
+| `reasoningEffort` | `string` | `"low"` | App-server execution effort; low keeps voice-tool turns responsive. |
+| `sessionTtlMs` | `number` | `1_800_000` | Maximum Live process lifetime. A new call also closes the previous call for that login session. |
+| `command` | `readonly string[]` | `codex --enable realtime_conversation app-server --stdio` | App-server executable override. |
+| `executionInstructions` | `string` | built-in tool-use instructions | Instructions for delegated execution turns. |
+| `realtimePrompt` | `string` | built-in native voice prompt | Prompt for the interruptible voice surface. |
+| `sessionFactory` | callback | built-in session | Advanced process-hosting or test override. |
+
+The handler adds `request`, `loginSessionId`, and `liveSessionId` to tool and
+confirmation callbacks. Tokens stay inside the SDK. Tool results must be
+JSON-serializable. If `executeTool` returns `pendingConfirmation`, the bridge
+immediately completes the model-side tool request so the call remains
+responsive; the consequential action stays pending until the application calls
+the confirmation route.
 
 ### Codex request defaults
 

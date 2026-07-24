@@ -1,7 +1,7 @@
 {
   "name": "@opencoredev/loginwithchatgpt-core",
   "version": "0.2.0",
-  "description": "Framework-agnostic Login with ChatGPT engine: OAuth, token refresh, Codex responses, and experimental private WebRTC voice.",
+  "description": "Framework-agnostic Login with ChatGPT engine: OAuth, Codex responses, and experimental private WebRTC voice with native tool handoffs.",
   "type": "module",
   "license": "MIT",
   "exports": {

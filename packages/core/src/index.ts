@@ -88,3 +88,10 @@ export {
   type ChatGPTRealtimeToolControls,
   type ConnectChatGPTRealtimeOptions,
 } from "./realtime-browser.ts";
+export {
+  connectChatGPTRealtimeAppServer,
+  parseChatGPTRealtimeAppServerEvent,
+  type ChatGPTRealtimeAppServerConnection,
+  type ChatGPTRealtimeAppServerEvent,
+  type ConnectChatGPTRealtimeAppServerOptions,
+} from "./realtime-app-server-browser.ts";
