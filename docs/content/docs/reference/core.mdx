@@ -20,6 +20,9 @@ Every package accepts these fields and resolves them with `resolveConfig()`:
 | `issuer` | `"https://auth.openai.com"` | Derives the OAuth, device-code, and token URLs. |
 | `scope` | `"openid profile email offline_access"` | `offline_access` is required for refresh tokens. |
 | `codexBaseUrl` | `"https://chatgpt.com/backend-api/codex"` | Base URL for models and responses. |
+| `realtimeBaseUrl` | `"https://chatgpt.com"` | ChatGPT web origin for the unsupported private voice transport. |
+| `realtimeClientVersion` | current observed ChatGPT web id | Sent to the private voice edge; can drift. |
+| `realtimeClientBuild` | current observed ChatGPT web build | Sent to the private voice edge; can drift. |
 | `originator` | `"codex_cli_rs"` | Sent as a header to upstream endpoints. |
 | `clientVersion` | `"0.142.5"` | Gates model availability; see [client version drift](/docs/concepts/models#client-version-drift). |
 | `fetch` | global `fetch` | Inject for testing, proxying, or exotic runtimes. |
@@ -98,6 +101,37 @@ This layer makes AI SDK traffic acceptable to the ChatGPT-backed backend:
   ([rules](/docs/concepts/response-proxy#request-normalization)).
 - `listCodexModels({ config, getAuth })` and `extractCodexModelSlugs(value)`
   handle model listing and tolerant slug extraction.
+
+## Experimental private voice transport
+
+These helpers target undocumented ChatGPT web routes, not the supported public
+Realtime API. The `/wm` path rejects arbitrary application `client_tools`;
+direct browser sessions do not receive the desktop app-server's handoff items.
+Video and screen-sharing media are not exposed by these SDK helpers.
+
+- `connectChatGPTRealtime(options?)` owns browser microphone, WebRTC, remote
+  audio, direct `/wm` event decoding, controls, and optional local barge-in.
+- `connectChatGPTRealtimeAppServer(options?)` uses the handler's authenticated
+  app-server routes, subscribes to tool lifecycle events, resolves explicit
+  confirmations, and closes the server process with the call.
+- `parseChatGPTRealtimeAppServerEvent(value)` validates the app-server event
+  catalog for custom clients.
+- `createChatGPTRealtimeCall({ config, getAuth, sdp, session })` is the
+  server-only SDP exchange primitive.
+- `buildChatGPTRealtimeSession(options?)` maps typed camel-case options to the
+  upstream session wire object.
+- `createChatGPTRealtimeAction()`, `encodeChatGPTRealtimeEvent()`, and
+  `parseChatGPTRealtimeEvent()` support custom WebRTC clients;
+  `getChatGPTRealtimePayload()` normalizes nested payload envelopes.
+- `parseChatGPTRealtimeToolInvocation()`,
+  `createChatGPTRealtimeToolUpdate()`, and
+  `createChatGPTRealtimeToolResult()` expose only the reserved direct `/wm`
+  client-tool lifecycle.
+- `CHATGPT_REALTIME_PATHS` and `CHATGPT_REALTIME_EVENT_TYPES` expose the known
+  mode routes and forward-compatible event catalog.
+
+The full types, schema, modes, and lifecycle are in
+[Experimental ChatGPT voice transport](/docs/guides/realtime-voice).
 
 ## Store
 

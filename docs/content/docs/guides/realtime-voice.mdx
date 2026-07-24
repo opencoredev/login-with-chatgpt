@@ -1,0 +1,492 @@
+---
+title: Experimental ChatGPT voice transport
+description: Experimental private GPT Live audio with native interruption, desktop-style application tools, confirmations, and explicit transport limitations.
+---
+
+The SDK can experimentally open the signed-in user's private ChatGPT voice
+transport over WebRTC. Audio flows directly between the browser and the voice
+peer after a one-time SDP
+exchange through your backend. Access, refresh, and ChatGPT web-session
+credentials never enter the WebRTC/browser response.
+
+<Callout type="warn" title="Unsupported private ChatGPT transport">
+  This integration targets ChatGPT's subscription-backed web transport. Its
+  endpoints and data-channel schema are not a documented public OpenAI API and
+  can change or stop working without notice. This is not an official capability
+  of the OpenAI SDK, and a ChatGPT subscription is not an API credential. If
+  your product uses an OpenAI API key, prefer the official
+  [`/v1/realtime/calls` WebRTC interface](https://developers.openai.com/api/docs/guides/realtime-webrtc)
+  and its documented [Realtime tool support](https://developers.openai.com/api/docs/guides/realtime-mcp)
+  instead.
+</Callout>
+
+<Callout type="warn" title="Direct /wm sessions are voice-only">
+  `/wm` accepts only ChatGPT's reserved device-tool IDs (`timer`, `stopwatch`,
+  `precise_location`, and `led`) in `client_tools`; arbitrary application
+  function schemas are rejected. The desktop app's thread-scoped Realtime
+  mediation is a separate app-server protocol; its handoff items are not
+  emitted to a direct browser `/wm` data channel. Do not turn caption or
+  transcript events into tool calls. Use the server package's app-server bridge
+  below when you intentionally accept that private desktop protocol, or use a
+  supported tool-capable Realtime API.
+</Callout>
+
+OpenAI currently describes ChatGPT Voice in Desktop as a duplex system:
+GPT-Live manages the live conversation while a separate model coordinates app
+tasks. Voice and delegated tasks have separate usage accounting. The private
+route names below are observed implementation details, not a documented
+contract for that product. See OpenAI's current
+[ChatGPT Voice in Desktop documentation](https://learn.chatgpt.com/docs/pricing#chatgpt-voice-in-desktop)
+for the authoritative availability and usage details.
+
+## Native tools through app-server mediation
+
+The desktop-style app-server path preserves native WebRTC audio and
+interruption while routing native `handoff_request` items to arbitrary
+server-owned function schemas. It does not monitor transcripts and does not
+introduce a second model.
+
+This path requires a Node/Bun backend and the `codex` executable on `PATH`.
+Configure tools on `createChatGPTHandler()`; never accept tool schemas from the
+browser:
+
+```ts title="server.ts"
+import {
+  createChatGPTHandler,
+  type RealtimeDynamicTool,
+} from "@opencoredev/loginwithchatgpt-server";
+
+const tools: RealtimeDynamicTool[] = [{
+  type: "function",
+  name: "record_lookup",
+  description: "Read a record owned by the authenticated application user.",
+  inputSchema: {
+    type: "object",
+    properties: { recordId: { type: "string" } },
+    required: ["recordId"],
+    additionalProperties: false,
+  },
+}, {
+  type: "function",
+  name: "record_prepare_change",
+  description: "Prepare a reviewable record change without applying it.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      recordId: { type: "string" },
+      value: { type: "string" },
+    },
+    required: ["recordId", "value"],
+    additionalProperties: false,
+  },
+}];
+
+const auth = createChatGPTHandler({
+  secret: process.env.LWC_SECRET,
+  realtime: {
+    appServer: {
+      tools,
+      allowedModels: (model) => allowedExecutionModels.has(model),
+      async executeTool({ request, callId, name, arguments: args }) {
+        const appUser = await requireAppUser(request);
+        const input = validateToolArguments(name, args);
+
+        if (name === "record_lookup") {
+          return {
+            output: await readOwnedRecord(appUser.id, input.recordId),
+          };
+        }
+
+        const change = await createPendingChange(appUser.id, callId, input);
+        return {
+          output: { status: "pending_confirmation", changeId: change.id },
+          pendingConfirmation: {
+            review: {
+              changeId: change.id,
+              recordId: change.recordId,
+              previousValue: change.previousValue,
+              nextValue: change.nextValue,
+            },
+          },
+        };
+      },
+      async confirmTool({ request, callId, confirmation, pending }) {
+        const appUser = await requireAppUser(request);
+        const approved = validateConfirmation(confirmation);
+        const result = approved
+          ? await atomicallyApplyOwnedChange(appUser.id, callId, pending)
+          : await keepPendingChange(appUser.id, callId);
+        return {
+          output: result,
+          speech: approved ? "The change was applied." : "I left the change unapplied.",
+        };
+      },
+    },
+  },
+});
+```
+
+The SDK adds the header-only authenticated request snapshot,
+`loginSessionId`, and opaque `liveSessionId` to each callback. Revalidate every
+argument, enforce application-user ownership, and make consequential operations
+idempotent by `callId`.
+
+Connect from a browser user gesture:
+
+```ts title="tool-voice.ts"
+import {
+  connectChatGPTRealtimeAppServer,
+} from "@opencoredev/loginwithchatgpt-core";
+
+let pending: { callId: string; review: unknown } | undefined;
+
+const live = await connectChatGPTRealtimeAppServer({
+  session: {
+    voice: "vale",
+    model: selectedModelSlug,
+  },
+  onStateChange: renderVoiceState,
+  onBridgeEvent(event) {
+    if (event.type === "tool.pending_confirmation") {
+      pending = { callId: event.callId, review: event.review };
+      renderConfirmation(event.review);
+    }
+  },
+});
+
+// Call only from an explicit application UI action.
+if (!pending) throw new Error("No action is waiting for confirmation.");
+await live.resolveConfirmation(pending.callId, { approved: true });
+
+// Releases browser media and closes the server process.
+live.close();
+```
+
+`connectChatGPTRealtimeAppServer()` creates the peer, exchanges SDP through
+`POST /realtime/app-server`, consumes the authenticated NDJSON event stream,
+posts confirmations, and deletes the server session during cleanup. The
+handler permits one active app-server call per login session and expires
+abandoned calls after 30 minutes by default. It also buffers a bounded set of
+early lifecycle events until the browser subscribes.
+
+Propagate the user's selected execution model in `session.model`. Delegated
+turns are entitlement-sensitive; silently falling back to a different default
+model can produce misleading model-specific usage errors.
+
+For a consequential action, the bridge returns the structured pending result
+to the execution turn immediately. Native voice therefore remains responsive
+while the application waits. Speech such as “send it” may ask the tool to
+prepare a review, but it must never replace the authenticated UI confirmation.
+
+Bridge events are `session.started`, `session.closed`, `handoff`,
+`tool.running`, `tool.completed`, `tool.pending_confirmation`, `tool.failed`,
+`error`, and `keepalive`. Never put bearer tokens, credentials, or unsafe raw
+tool results in the browser-facing `review` payload.
+
+## Start a direct voice-only call
+
+GPT Live `/realtime/wm` does not accept the Codex device-login token used by the
+rest of this SDK. Configure the handler with a server-only auth callback backed
+by an encrypted ChatGPT web session. The callback should also verify that the
+ChatGPT email matches your application's authenticated user:
+
+```ts title="server.ts"
+import {
+  exchangeChatGPTRealtimeWebSession,
+  resolveConfig,
+} from "@opencoredev/loginwithchatgpt-core";
+import { createChatGPTHandler } from "@opencoredev/loginwithchatgpt-server";
+
+const config = resolveConfig();
+const auth = createChatGPTHandler({
+  secret: process.env.LWC_SECRET,
+  realtime: {
+    async getAuth({ request }) {
+      const appUser = await requireAppUser(request);
+      const encrypted = await loadUserRealtimeSession(appUser.id);
+      const stored = await decrypt(encrypted);
+      const live = await exchangeChatGPTRealtimeWebSession({
+        config,
+        sessionToken: stored.sessionToken,
+        deviceId: stored.deviceId,
+        sessionCookies: stored.sessionCookies,
+        onSessionUpdate: async (next) => {
+          await saveUserRealtimeSession(appUser.id, await encrypt({ ...stored, ...next }));
+        },
+      });
+      if (live.email.toLowerCase() !== appUser.email.toLowerCase()) {
+        throw new Error("ChatGPT Live identity does not match the app user");
+      }
+      return live;
+    },
+  },
+});
+```
+
+Then connect from a user gesture so the browser can grant microphone access and
+play audio:
+
+```bash
+bun add @opencoredev/loginwithchatgpt-core
+```
+
+```ts title="voice.ts"
+import { connectChatGPTRealtime } from "@opencoredev/loginwithchatgpt-core";
+
+const call = await connectChatGPTRealtime({
+  session: {
+    voice: "juniper",
+    transport: "wm",
+    language: "en-US",
+  },
+  onStateChange: (state) => console.log(state),
+  onEvent: (event) => {
+    if (event.type === "user_transcription_text") console.log(event);
+  },
+});
+
+// Explicit controls are useful for buttons and push-to-talk.
+call.stopSpeaking();
+call.setInputMuted(true);
+call.setOutputMuted(false);
+
+// Always release the microphone, peer, data channel, and audio graph.
+call.close();
+```
+
+`connectChatGPTRealtime()` does the following:
+
+1. captures audio with echo cancellation, noise suppression, and automatic gain;
+2. creates a `max-bundle` WebRTC peer and negotiated data channel id `0`;
+3. posts the local SDP and session options to `/api/chatgpt/realtime`;
+4. applies the SDP answer, plays the remote audio track, and decodes events;
+5. monitors local voice activity while the model speaks and sends
+   `stop_speaking` for natural barge-in.
+
+Pass `bargeIn: false` to disable local interruption detection, or tune it:
+
+```ts
+bargeIn: { threshold: 0.045, holdMs: 120, cooldownMs: 800 }
+```
+
+You may supply `mediaStream`, `mediaConstraints`, `peerConnection`, or
+`audioElement` when your application owns those objects. A supplied stream is
+not stopped by `close()`; a stream created by the SDK is.
+
+## Connection API
+
+The resolved `ChatGPTRealtimeConnection` exposes:
+
+| Member | Purpose |
+| --- | --- |
+| `state` | Current `connecting`, `listening`, `thinking`, `speaking`, or other reported state. |
+| `peerConnection`, `dataChannel`, `mediaStream`, `audioElement` | Escape hatches for media/UI integration. |
+| `send(event)` | Send a forward-compatible raw protocol event. |
+| `action(name, payload?)` | Send an `action_request`. |
+| `startListening()`, `stopListening()`, `resumeListening()` | Listening controls. |
+| `stopSpeaking()` | Interrupt current model speech. |
+| `relayMessage(text, metadata?)` | Inject a typed user message into GPT Live. |
+| `setInputMuted(boolean)`, `setOutputMuted(boolean)` | Local media controls. |
+| `close()` | Idempotently release all SDK-owned resources. |
+
+`connectChatGPTRealtimeAppServer()` returns the same connection plus:
+
+| Member | Purpose |
+| --- | --- |
+| `sessionId` | Opaque server-side call id. |
+| `resolveConfirmation(callId, confirmation)` | Submit an application-defined confirmation under the authenticated session. |
+| `closeServer()` | Await server-process cleanup when teardown must complete before navigation or shutdown. |
+
+Use `onBridgeEvent` for application-tool status. `onEvent` remains the native
+WebRTC/data-channel stream; these two event sources are intentionally separate.
+
+For push-to-talk, disable automatic barge-in, call `startListening()` on press,
+and `stopListening()` on release.
+
+This SDK does not expose video or screen-sharing media. The browser helper
+rejects video constraints and streams with video tracks. Its peer connection
+still creates an inert send-only video transceiver because the observed private
+handshake expects that SDP m-line; this is transport compatibility, not a video
+feature or a claim about every ChatGPT Voice surface.
+
+## Session schema
+
+The browser sends ergonomic camel-case `ChatGPTRealtimeSessionOptions`. The
+core package converts them into the upstream wire keys shown below.
+
+| SDK option | Upstream key | Default / behavior |
+| --- | --- | --- |
+| `transport` | endpoint selection | `"wm"` (GPT Live); `"vp"` and `"vps"` are explicit compatibility options |
+| `voice` | `voice` | `"juniper"` |
+| `voiceMode` | `voice_mode` | `"wingman"` for `/wm` |
+| `model` | `requested_default_model`, `model_slug` | Empty for direct `/wm`; required or strongly recommended for app-server delegated execution so the selected entitlement is preserved. |
+| `advancedModel` | `model_slug_advanced` | Private `vp` compatibility field; no product-feature guarantee. |
+| `language` | `language_code` | `null`; browser helper may pass locale |
+| `conversationId` | `conversation_id` | `null` for a new conversation |
+| `parentMessageId` | `parent_message_id` | omitted |
+| `timezone`, `timezoneOffsetMinutes` | `timezone`, `timezone_offset_min` | browser timezone; server fallback is UTC / `0` |
+| `clientTools` | `client_tools` | Must be empty. `/wm` rejects arbitrary application IDs. |
+| `conversationMode` | `conversation_mode` | `{ "kind": "primary_assistant" }` |
+| `historyAndTrainingDisabled` | `history_and_training_disabled` | `false` for `/wm`; OpenAI currently denies `/wm` sessions when true |
+| `enableMessageStreaming` | `enable_message_streaming` | `true` by default |
+
+The fixed `/wm` wire payload includes `backend_reasoning_effort: "high"`,
+`chat_mode: "chat"`, and an empty `client_tools` array, matching the current
+ChatGPT clients.
+The SDK deliberately does not expose arbitrary private metadata, prompt
+overrides, delegation controls, or model-tool fields as supported features.
+
+`voice_session_id` and `voice_status_request_id` are generated per call. Use
+`buildChatGPTRealtimeSession()` when you need the exact wire object without
+opening a connection.
+
+## Direct HTTP endpoint
+
+`POST /api/chatgpt/realtime` is cookie-authenticated and protected by the same
+origin checks as `/responses`.
+
+```json title="request"
+{
+  "sdp": "v=0\r\n…",
+  "session": {
+    "voice": "juniper",
+    "transport": "wm",
+    "language": "en-US"
+  }
+}
+```
+
+A successful response is `201 application/sdp` containing the WebRTC answer.
+Errors are JSON:
+
+| Status | Error |
+| --- | --- |
+| `400` | `invalid_realtime_request` |
+| `401` | `not_authenticated` |
+| `403` | `origin_not_allowed`, `realtime_mode_not_allowed`, or `realtime_transport_not_allowed` |
+| `413` | `realtime_request_too_large` |
+| `501` | `realtime_web_auth_required` when `/wm` has no server auth callback |
+| upstream / `502` | `realtime_request_failed` |
+
+Configure the route with:
+
+```ts
+createChatGPTHandler({
+  enableRealtime: true,
+  realtime: {
+    maxRequestBytes: 256 * 1024,
+    allowedTransports: ["wm"],
+    allowedModes: ["wingman"],
+    sessionDefaults: { transport: "wm", historyAndTrainingDisabled: false },
+    getAuth: async ({ request }) => getUserBoundWebAuth(request),
+  },
+});
+```
+
+The handler converts the request to multipart `sdp` + `session` fields and
+posts to the selected ChatGPT endpoint:
+
+| Transport | Upstream signaling endpoint |
+| --- | --- |
+| `wm` | `POST https://chatgpt.com/realtime/wm` |
+| `vp` | `POST https://chatgpt.com/realtime/vp?dcid=0` |
+| `vps` | `POST https://chatgpt.com/realtime/vps?dcid=0` |
+
+`wm` is the default because it is the currently observed GPT Live transport.
+The server permits only `wm` unless `realtime.allowedTransports` explicitly
+opts into a compatibility path. `vp` and `vps` are undocumented, may disappear,
+and do not make Advanced or Standard product features available through this
+SDK. Codex OAuth tokens do not authorize `wm`; `getAuth` must return a
+short-lived token minted for the ChatGPT web client.
+`exchangeChatGPTRealtimeWebSession()` performs
+that server-only exchange and validates the token client id.
+
+The app-server route family is separate:
+
+| Route | Purpose |
+| --- | --- |
+| `POST /api/chatgpt/realtime/app-server` | Create the user-scoped app-server process and exchange SDP. |
+| `GET /api/chatgpt/realtime/app-server/:id/events` | Stream bridge events as NDJSON. |
+| `POST /api/chatgpt/realtime/app-server/:id/confirm` | Resolve an application-owned pending action. |
+| `DELETE /api/chatgpt/realtime/app-server/:id` | Stop and remove the call. |
+
+These routes use the normal authenticated Codex session, not
+`realtime.getAuth`. Cross-session ids return `404`, non-GET requests keep the
+same origin protections, logout closes owned calls, and no access or refresh
+token enters the response.
+
+## Data-channel schema
+
+Messages arrive in a nested
+`{ "type": "data_message", "data": "<json>" }` envelope. The parser accepts
+strings, `ArrayBuffer`, typed arrays, byte arrays, and numeric-key byte objects.
+Unknown event types pass through unchanged. Event-specific fields may be on the
+event or its `payload`; `getChatGPTRealtimePayload(event)` normalizes both forms.
+
+Client events must use that same outer envelope. `/wm` silently ignores a raw
+inner action or relay event. `encodeChatGPTRealtimeEvent()` and every connection
+method add the required framing.
+
+Observed event names exported in `CHATGPT_REALTIME_EVENT_TYPES`:
+
+| Area | Event types |
+| --- | --- |
+| State/control | `state_update`, `action_request`, `goodbye`, `close_request`, `close_ready`, `track_state`, `speaking_update` |
+| Conversation/streaming | `conversation_update`, `streaming_message_update`, `full_chat_message`, `chat_message_delta`, `relay_message`, `relay_message_processed` |
+| Speech/text | `user_transcription_text`, `live_captioning_text` |
+| Reserved client tools | `client_tool_invoke`, `client_tool_update`, `client_tool_result` |
+
+This catalog is intentionally narrow. The parser passes unknown events through
+for forward compatibility, but their presence is not an SDK capability claim.
+
+The client-tool parsing and result helpers remain available for compatibility
+with ChatGPT's reserved first-party tools, but the SDK does not advertise
+arbitrary schemas in `/wm`.
+
+Control messages use this shape:
+
+```json
+{
+  "type": "action_request",
+  "payload": { "action": "stop_speaking" }
+}
+```
+
+Known actions are `start_listening`, `stop_listening`, `stop_speaking`,
+`resume_listening`, and `relay_message`. A conversational text relay is not an
+`action_request`; `createChatGPTRealtimeRelayMessage()` builds the currently
+observed private message shape. It is not a function call or tool result. Use
+`createChatGPTRealtimeAction()`, `encodeChatGPTRealtimeEvent()`, and
+`parseChatGPTRealtimeEvent()` for a custom transport.
+
+## Low-level server use
+
+Custom backends can call `createChatGPTRealtimeCall()` directly with a resolved
+config, an auth callback, SDP, and session options. This is a server-only
+primitive because `getAuth()` returns bearer material. Some runtime HTTP stacks
+may be challenged by ChatGPT's web edge; inject a compatible server-side
+`fetch` through `resolveConfig({ fetch })` when necessary. Never solve that by
+moving the ChatGPT access token into the browser.
+
+The web-session credential is longer-lived and more sensitive than the minted
+access token. Encrypt it at rest, bind it to the application's user identity,
+never log it, and never put it in local storage or a client-readable cookie.
+ChatGPT's web edge also requires a stable `oai-did` device identity and can
+rotate its NextAuth session into numbered cookie chunks. Persist the
+`deviceId` and `sessionCookies` delivered to `onSessionUpdate`; serialize
+concurrent exchanges for one user so two requests cannot race that rotation.
+The helper distinguishes a true 401 expiry from a retryable 403 edge rejection.
+
+Custom Node/Bun backends can also instantiate
+`ChatGPTRealtimeAppServerSession` directly. They must provide server-held
+tokens, token refresh, dynamic schemas, execution and confirmation handlers,
+user-scoped session storage, an authenticated event stream, a confirmation
+route, TTL cleanup, and model propagation. Most applications should use the
+built-in handler routes, which provide that lifecycle.
+
+Treat every dynamic-tool invocation as untrusted input. Revalidate it against
+the configured server-side schema and allowlist, bind execution to the
+authenticated application user, make calls idempotent by call id, and return
+only JSON-serializable results. Keep preparation separate from consequential
+mutation, and require an explicit application UI confirmation immediately
+before the mutation.

@@ -6,11 +6,15 @@ import {
   type CodexResponsesOptions,
   type KeyValueStore,
   type LoginStatus,
+  type ChatGPTRealtimeSessionOptions,
+  type ChatGPTRealtimeAuth,
+  type ChatGPTRealtimeVoiceMode,
   type ReasoningEffort,
   DEFAULT_MODEL,
   ChatGPTAuthError,
   MemoryStore,
   createCodexFetch,
+  createChatGPTRealtimeCall,
   listCodexModels,
   randomToken,
   resolveConfig,
@@ -18,6 +22,15 @@ import {
 import { type CookieOptions, readCookie, serializeCookie } from "./cookies.ts";
 import { sign, unsign } from "./crypto.ts";
 import { SessionManager, type StoredSession } from "./session.ts";
+import {
+  ChatGPTRealtimeAppServerSession,
+  type ChatGPTRealtimeAppServerOptions,
+  type RealtimeBridgeEvent,
+  type RealtimeConfirmationResult,
+  type RealtimeDynamicTool,
+  type RealtimeToolContext,
+  type RealtimeToolResult,
+} from "./realtime-app-server.ts";
 
 const DEFAULT_BASE_PATH = "/api/chatgpt";
 const DEFAULT_COOKIE_NAME = "lwc_session";
@@ -25,6 +38,9 @@ const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_RESPONSES_BODY_BYTES = 40 * 1024 * 1024;
 const DEFAULT_RESPONSES_RATE_LIMIT = 30;
 const DEFAULT_RESPONSES_RATE_WINDOW_MS = 60 * 1000;
+const DEFAULT_MAX_REALTIME_BODY_BYTES = 256 * 1024;
+const DEFAULT_REALTIME_APP_SERVER_SESSION_TTL_MS = 30 * 60 * 1000;
+const MAX_QUEUED_REALTIME_APP_SERVER_EVENTS = 256;
 const SERVICE_TIER_HEADER = "x-login-with-chatgpt-service-tier";
 const REASONING_EFFORT_HEADER = "x-login-with-chatgpt-reasoning-effort";
 const SERVICE_TIERS = new Set<CodexServiceTier>(["auto", "default", "flex", "priority", "fast"]);
@@ -59,6 +75,76 @@ export interface ResponsesRateLimit {
   store?: KeyValueStore<RateLimitBucket>;
 }
 
+export interface RealtimeProxyPolicy {
+  /** Maximum JSON signaling request size. Defaults to 256 KiB. */
+  maxRequestBytes?: number;
+  /** Private transports the browser may request. Defaults to only `wm`. */
+  allowedTransports?: readonly ("wm" | "vp" | "vps")[];
+  /** Voice modes the browser may request. Unrestricted when omitted. */
+  allowedModes?: readonly ChatGPTRealtimeVoiceMode[];
+  /** Server defaults merged before browser session options. */
+  sessionDefaults?: ChatGPTRealtimeSessionOptions;
+  /**
+   * Supplies a short-lived ChatGPT web-client token for `/wm`. The normal
+   * Codex device-login token is intentionally not reused because OpenAI rejects
+   * it for GPT Live. Resolve this from an encrypted, user-bound web session.
+   */
+  getAuth?: (context: {
+    request: Request;
+    sessionId: string;
+    transport: "wm" | "vp" | "vps";
+  }) => Promise<ChatGPTRealtimeAuth> | ChatGPTRealtimeAuth;
+  /**
+   * Enables the desktop-style app-server route for native GPT Live audio plus
+   * arbitrary server-side application tools.
+   */
+  appServer?: RealtimeAppServerPolicy;
+}
+
+export interface RealtimeAppServerToolContext extends RealtimeToolContext {
+  /** Stable id of the authenticated Login with ChatGPT session. */
+  loginSessionId: string;
+  /** Opaque id of this Live call. */
+  liveSessionId: string;
+  /** Header-only snapshot of the authenticated session-creation request. */
+  request: Request;
+}
+
+export interface RealtimeAppServerConfirmationContext extends RealtimeAppServerToolContext {
+  confirmation: unknown;
+  pending: RealtimeToolResult;
+}
+
+export interface RealtimeAppServerPolicy {
+  /** Server-owned function schemas exposed to the delegated execution turn. */
+  tools: readonly RealtimeDynamicTool[];
+  /** Executes one allowlisted tool under the authenticated application user. */
+  executeTool: (context: RealtimeAppServerToolContext) => Promise<RealtimeToolResult>;
+  /** Performs an application-owned pending action after explicit confirmation. */
+  confirmTool?: (
+    context: RealtimeAppServerConfirmationContext,
+  ) => Promise<RealtimeConfirmationResult>;
+  /** Restricts browser-selected delegated execution models. */
+  allowedModels?: readonly string[] | ((model: string) => boolean);
+  /** Used when the browser does not select a model. */
+  defaultModel?: string;
+  /** Defaults to `low` for responsive tool turns. */
+  reasoningEffort?: string;
+  /** Defaults to 30 minutes. */
+  sessionTtlMs?: number;
+  /** Optional app-server executable override. */
+  command?: readonly string[];
+  executionInstructions?: string;
+  realtimePrompt?: string;
+  /**
+   * Advanced factory hook for custom process hosting and tests. The default
+   * constructs {@link ChatGPTRealtimeAppServerSession}.
+   */
+  sessionFactory?: (
+    options: ChatGPTRealtimeAppServerOptions,
+  ) => ChatGPTRealtimeAppServerSession;
+}
+
 /** Fixed-window rate counter persisted per session id. */
 export interface RateLimitBucket {
   count: number;
@@ -86,6 +172,10 @@ export interface CreateChatGPTHandlerOptions extends ChatGPTConfig, CodexRespons
   defaultModel?: string;
   /** Set `false` to disable the built-in `/responses` proxy. Defaults to `true`. */
   enableResponsesProxy?: boolean;
+  /** Set `false` to disable all built-in Realtime routes. Defaults to `true`. */
+  enableRealtime?: boolean;
+  /** Guardrails and defaults for ChatGPT Realtime signaling. */
+  realtime?: RealtimeProxyPolicy;
   /** Guardrails for the built-in `/responses` proxy. */
   responsesProxy?: ResponsesProxyPolicy;
   /**
@@ -158,6 +248,15 @@ export interface ChatGPTHandler {
   getModels: (request: Request) => Promise<string[] | undefined>;
 }
 
+interface ManagedRealtimeAppServerSession {
+  ownerSessionId: string;
+  session: ChatGPTRealtimeAppServerSession;
+  expires: ReturnType<typeof setTimeout>;
+  queuedEvents: RealtimeBridgeEvent[];
+  subscribers: Set<(event: RealtimeBridgeEvent) => void>;
+  unsubscribe: () => void;
+}
+
 /**
  * Creates the backend that hosts the Login with ChatGPT flow. Mount
  * {@link ChatGPTHandler.handler} at `${basePath}/*` on any Web-standard runtime
@@ -171,8 +270,12 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
   const secret = options.secret ?? createEphemeralSecret();
   const defaultModel = options.defaultModel ?? DEFAULT_MODEL;
   const enableResponsesProxy = options.enableResponsesProxy ?? true;
+  const enableRealtime = options.enableRealtime ?? true;
   const responsesProxy = options.responsesProxy ?? {};
+  const realtime = options.realtime ?? {};
+  const realtimeAppServer = realtime.appServer;
   const maxResponsesBodyBytes = responsesProxy.maxRequestBytes ?? DEFAULT_MAX_RESPONSES_BODY_BYTES;
+  const maxRealtimeBodyBytes = realtime.maxRequestBytes ?? DEFAULT_MAX_REALTIME_BODY_BYTES;
 
   const allowedOrigins = new Set<string>();
   for (const origin of options.allowedOrigins ?? []) {
@@ -199,6 +302,7 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
     secret,
     now,
   });
+  const realtimeAppServerSessions = new Map<string, ManagedRealtimeAppServerSession>();
 
   const cookieDefaults: CookieOptions = {
     path: "/",
@@ -279,6 +383,36 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
     return undefined;
   }
 
+  function getRealtimeAppServerSession(
+    liveSessionId: string,
+    ownerSessionId: string,
+  ): ManagedRealtimeAppServerSession | undefined {
+    const managed = realtimeAppServerSessions.get(liveSessionId);
+    return managed?.ownerSessionId === ownerSessionId ? managed : undefined;
+  }
+
+  async function closeRealtimeAppServerSession(
+    liveSessionId: string,
+    ownerSessionId?: string,
+  ): Promise<boolean> {
+    const managed = realtimeAppServerSessions.get(liveSessionId);
+    if (!managed || (ownerSessionId && managed.ownerSessionId !== ownerSessionId)) return false;
+    realtimeAppServerSessions.delete(liveSessionId);
+    clearTimeout(managed.expires);
+    await managed.session.close();
+    managed.unsubscribe();
+    return true;
+  }
+
+  async function closeRealtimeAppServerSessionsForOwner(ownerSessionId: string): Promise<void> {
+    const owned = [...realtimeAppServerSessions.entries()]
+      .filter(([, managed]) => managed.ownerSessionId === ownerSessionId)
+      .map(([liveSessionId]) => liveSessionId);
+    await Promise.all(owned.map((liveSessionId) =>
+      closeRealtimeAppServerSession(liveSessionId, ownerSessionId)
+    ));
+  }
+
   async function handleLogin(request: Request): Promise<Response> {
     let sessionId = await readSessionId(request);
     const headers = new Headers();
@@ -315,7 +449,10 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
 
   async function handleLogout(request: Request): Promise<Response> {
     const sessionId = await readSessionId(request);
-    if (sessionId) await sessions.delete(sessionId);
+    if (sessionId) {
+      await closeRealtimeAppServerSessionsForOwner(sessionId);
+      await sessions.delete(sessionId);
+    }
     return json(
       { status: "unauthenticated" satisfies LoginStatus },
       { headers: new Headers({ "Set-Cookie": clearCookie(request) }) },
@@ -426,17 +563,333 @@ export function createChatGPTHandler(options: CreateChatGPTHandlerOptions = {}):
     }
   }
 
+  async function handleRealtime(request: Request): Promise<Response> {
+    const sessionId = await readSessionId(request);
+    if (!sessionId) return json({ error: "not_authenticated" }, { status: 401 });
+    const payload = await prepareRealtimePayload(request, maxRealtimeBodyBytes);
+    if (payload instanceof Response) return payload;
+    const mergedSession = mergeRealtimeSessionOptions(realtime.sessionDefaults, payload.session) ?? {};
+    const transport = mergedSession.transport ?? "wm";
+    if (!(realtime.allowedTransports ?? ["wm"]).includes(transport)) {
+      return json({ error: "realtime_transport_not_allowed", transport }, { status: 403 });
+    }
+    const mode = mergedSession.voiceMode ?? (transport === "wm" ? "wingman" : transport === "vps" ? "standard" : "advanced");
+    if (realtime.allowedModes && !realtime.allowedModes.includes(mode)) {
+      return json({ error: "realtime_mode_not_allowed", voiceMode: mode }, { status: 403 });
+    }
+
+    try {
+      let realtimeAuth: ChatGPTRealtimeAuth;
+      if (realtime.getAuth) {
+        realtimeAuth = await realtime.getAuth({ request, sessionId, transport });
+      } else {
+        if (transport === "wm") {
+          return json(
+            {
+              error: "realtime_web_auth_required",
+              message: "GPT Live `/wm` requires realtime.getAuth backed by a server-side ChatGPT web session.",
+            },
+            { status: 501 },
+          );
+        }
+        const tokens = await sessions.getFreshTokens(sessionId);
+        if (!tokens?.accessToken || !tokens.accountId) {
+          return json({ error: "not_authenticated" }, { status: 401 });
+        }
+        realtimeAuth = { accessToken: tokens.accessToken, accountId: tokens.accountId };
+      }
+
+      const answer = await createChatGPTRealtimeCall({
+        config,
+        getAuth: () => realtimeAuth,
+        sdp: payload.sdp,
+        session: mergedSession,
+        signal: request.signal,
+      });
+      return new Response(answer, {
+        status: 201,
+        headers: { "content-type": "application/sdp", "cache-control": "no-store" },
+      });
+    } catch (error) {
+      if (error instanceof TypeError) {
+        return json({ error: "invalid_realtime_request", message: error.message }, { status: 400 });
+      }
+      if (error instanceof ChatGPTAuthError) {
+        return json(
+          { error: error.code, message: error.message, status: error.status, detail: error.body?.slice(0, 2000) },
+          { status: error.status ?? 502 },
+        );
+      }
+      throw error;
+    }
+  }
+
+  async function handleRealtimeAppServerStart(request: Request): Promise<Response> {
+    if (!realtimeAppServer) return new Response("Not found", { status: 404 });
+    const ownerSessionId = await readSessionId(request);
+    if (!ownerSessionId) return json({ error: "not_authenticated" }, { status: 401 });
+    const payload = await prepareRealtimePayload(request, maxRealtimeBodyBytes);
+    if (payload instanceof Response) return payload;
+    const tokens = await sessions.getFreshTokens(ownerSessionId);
+    if (!tokens?.accessToken || !tokens.accountId) {
+      return json({ error: "not_authenticated" }, { status: 401 });
+    }
+    const model = payload.session?.model ?? realtimeAppServer.defaultModel;
+    if (model && !isModelAllowed(model, realtimeAppServer.allowedModels)) {
+      return json({ error: "realtime_model_not_allowed", model }, { status: 403 });
+    }
+
+    await closeRealtimeAppServerSessionsForOwner(ownerSessionId);
+    const requestSnapshot = new Request(request.url, { headers: request.headers });
+    let liveSessionId = "";
+    const sessionOptions: ChatGPTRealtimeAppServerOptions = {
+      tokens,
+      refreshTokens: async () => {
+        const fresh = await sessions.getFreshTokens(ownerSessionId);
+        if (!fresh?.accessToken || !fresh.accountId) {
+          throw new Error("Login with ChatGPT session is no longer authenticated.");
+        }
+        return fresh;
+      },
+      tools: realtimeAppServer.tools,
+      executeTool: (context) => realtimeAppServer.executeTool({
+        ...context,
+        loginSessionId: ownerSessionId,
+        liveSessionId,
+        request: requestSnapshot,
+      }),
+      ...(realtimeAppServer.confirmTool
+        ? {
+            confirmTool: (context) => realtimeAppServer.confirmTool!({
+              ...context,
+              loginSessionId: ownerSessionId,
+              liveSessionId,
+              request: requestSnapshot,
+            }),
+          }
+        : {}),
+      ...(realtimeAppServer.command ? { command: realtimeAppServer.command } : {}),
+      ...(realtimeAppServer.executionInstructions
+        ? { executionInstructions: realtimeAppServer.executionInstructions }
+        : {}),
+      ...(realtimeAppServer.realtimePrompt
+        ? { realtimePrompt: realtimeAppServer.realtimePrompt }
+        : {}),
+    };
+    const session = realtimeAppServer.sessionFactory
+      ? realtimeAppServer.sessionFactory(sessionOptions)
+      : new ChatGPTRealtimeAppServerSession(sessionOptions);
+    liveSessionId = session.id;
+    const queuedEvents: RealtimeBridgeEvent[] = [];
+    const subscribers = new Set<(event: RealtimeBridgeEvent) => void>();
+    let managed: ManagedRealtimeAppServerSession | undefined;
+    const unsubscribe = session.onEvent((event) => {
+      if (subscribers.size === 0) {
+        queuedEvents.push(event);
+        if (queuedEvents.length > MAX_QUEUED_REALTIME_APP_SERVER_EVENTS) {
+          queuedEvents.shift();
+        }
+      } else {
+        for (const subscriber of subscribers) {
+          try {
+            subscriber(event);
+          } catch {
+            subscribers.delete(subscriber);
+          }
+        }
+      }
+      if (event.type !== "session.closed" || !managed) return;
+      const current = realtimeAppServerSessions.get(liveSessionId);
+      if (current?.session !== session) return;
+      realtimeAppServerSessions.delete(liveSessionId);
+      clearTimeout(current.expires);
+      unsubscribe();
+    });
+
+    let answer: string;
+    try {
+      answer = await session.start({
+        sdp: payload.sdp,
+        voice: payload.session?.voice,
+        model,
+        reasoningEffort: realtimeAppServer.reasoningEffort,
+      });
+    } catch (error) {
+      await session.close().catch(() => {});
+      unsubscribe();
+      const message = error instanceof Error ? error.message : String(error);
+      return json({ error: "realtime_app_server_start_failed", message }, { status: 502 });
+    }
+
+    const ttlMs = realtimeAppServer.sessionTtlMs
+      ?? DEFAULT_REALTIME_APP_SERVER_SESSION_TTL_MS;
+    const expires = setTimeout(() => {
+      void closeRealtimeAppServerSession(liveSessionId);
+    }, ttlMs);
+    if (typeof expires === "object" && "unref" in expires) expires.unref();
+    managed = {
+      ownerSessionId,
+      session,
+      expires,
+      queuedEvents,
+      subscribers,
+      unsubscribe,
+    };
+    realtimeAppServerSessions.set(liveSessionId, managed);
+    return json(
+      { sessionId: liveSessionId, sdp: answer },
+      { status: 201, headers: new Headers({ "cache-control": "no-store" }) },
+    );
+  }
+
+  async function handleRealtimeAppServerEvents(
+    request: Request,
+    liveSessionId: string,
+  ): Promise<Response> {
+    const ownerSessionId = await readSessionId(request);
+    if (!ownerSessionId) return json({ error: "not_authenticated" }, { status: 401 });
+    const managed = getRealtimeAppServerSession(liveSessionId, ownerSessionId);
+    if (!managed) return json({ error: "realtime_session_not_found" }, { status: 404 });
+
+    const encoder = new TextEncoder();
+    let unsubscribe = () => {};
+    let keepalive: ReturnType<typeof setInterval> | undefined;
+    let active = true;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const write = (event: unknown) => {
+          if (!active) return;
+          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+        };
+        for (const event of managed.queuedEvents.splice(0)) write(event);
+        const listener = (event: RealtimeBridgeEvent) => {
+          write(event);
+          if (event.type === "session.closed") {
+            active = false;
+            clearInterval(keepalive);
+            unsubscribe();
+            controller.close();
+          }
+        };
+        managed.subscribers.add(listener);
+        unsubscribe = () => managed.subscribers.delete(listener);
+        keepalive = setInterval(() => write({ type: "keepalive" }), 15_000);
+        const abort = () => {
+          if (!active) return;
+          active = false;
+          clearInterval(keepalive);
+          unsubscribe();
+          controller.close();
+        };
+        request.signal.addEventListener("abort", abort, { once: true });
+      },
+      cancel() {
+        active = false;
+        clearInterval(keepalive);
+        unsubscribe();
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        "content-type": "application/x-ndjson",
+        "cache-control": "no-store",
+        "x-accel-buffering": "no",
+      },
+    });
+  }
+
+  async function handleRealtimeAppServerConfirm(
+    request: Request,
+    liveSessionId: string,
+  ): Promise<Response> {
+    if (!realtimeAppServer?.confirmTool) {
+      return json({ error: "realtime_confirmation_not_configured" }, { status: 501 });
+    }
+    const ownerSessionId = await readSessionId(request);
+    if (!ownerSessionId) return json({ error: "not_authenticated" }, { status: 401 });
+    const managed = getRealtimeAppServerSession(liveSessionId, ownerSessionId);
+    if (!managed) return json({ error: "realtime_session_not_found" }, { status: 404 });
+    let payload: unknown;
+    try {
+      const contentLength = request.headers.get("content-length");
+      if (contentLength && Number(contentLength) > maxRealtimeBodyBytes) {
+        return json(
+          { error: "realtime_request_too_large", maxRequestBytes: maxRealtimeBodyBytes },
+          { status: 413 },
+        );
+      }
+      const text = await request.text();
+      if (new TextEncoder().encode(text).byteLength > maxRealtimeBodyBytes) {
+        return json(
+          { error: "realtime_request_too_large", maxRequestBytes: maxRealtimeBodyBytes },
+          { status: 413 },
+        );
+      }
+      payload = JSON.parse(text);
+    } catch {
+      return json({ error: "invalid_realtime_confirmation" }, { status: 400 });
+    }
+    if (!isRecord(payload) || typeof payload["callId"] !== "string" ||
+        !("confirmation" in payload)) {
+      return json(
+        {
+          error: "invalid_realtime_confirmation",
+          message: "Expected `callId` and application-defined `confirmation`.",
+        },
+        { status: 400 },
+      );
+    }
+    try {
+      await managed.session.resolveConfirmation(payload["callId"], payload["confirmation"]);
+      return json({ status: "resolved", callId: payload["callId"] });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status = message.includes("no longer pending") ? 409 : 500;
+      return json({ error: "realtime_confirmation_failed", message }, { status });
+    }
+  }
+
+  async function handleRealtimeAppServerClose(
+    request: Request,
+    liveSessionId: string,
+  ): Promise<Response> {
+    const ownerSessionId = await readSessionId(request);
+    if (!ownerSessionId) return json({ error: "not_authenticated" }, { status: 401 });
+    if (!await closeRealtimeAppServerSession(liveSessionId, ownerSessionId)) {
+      return json({ error: "realtime_session_not_found" }, { status: 404 });
+    }
+    return json({ status: "closed" });
+  }
+
   const routes: Record<string, Partial<Record<string, (request: Request) => Promise<Response>>>> = {
     "/login": { POST: handleLogin },
     "/status": { GET: handleStatus },
     "/session": { GET: handleSession },
     "/logout": { POST: handleLogout },
+    ...(enableRealtime ? { "/realtime": { POST: handleRealtime } } : {}),
+    ...(enableRealtime && realtimeAppServer
+      ? { "/realtime/app-server": { POST: handleRealtimeAppServerStart } }
+      : {}),
     ...(enableResponsesProxy ? { "/responses": { POST: handleResponses }, "/models": { GET: handleModels } } : {}),
   };
 
   const handler = async (request: Request): Promise<Response> => {
     const route = matchRoute(new URL(request.url).pathname, basePath);
-    const methods = route === undefined ? undefined : routes[route];
+    let methods = route === undefined ? undefined : routes[route];
+    if (!methods && enableRealtime && realtimeAppServer && route) {
+      const match = /^\/realtime\/app-server\/([^/]+)(?:\/(events|confirm))?$/.exec(route);
+      if (match?.[1]) {
+        const liveSessionId = decodeURIComponent(match[1]);
+        methods = match[2] === "events"
+          ? { GET: (currentRequest) =>
+              handleRealtimeAppServerEvents(currentRequest, liveSessionId) }
+          : match[2] === "confirm"
+            ? { POST: (currentRequest) =>
+                handleRealtimeAppServerConfirm(currentRequest, liveSessionId) }
+            : { DELETE: (currentRequest) =>
+                handleRealtimeAppServerClose(currentRequest, liveSessionId) };
+      }
+    }
     if (!methods) return new Response("Not found", { status: 404 });
     const method = methods[request.method];
     if (!method) {
@@ -632,6 +1085,74 @@ function isModelAllowed(model: string, allowedModels: ResponsesProxyPolicy["allo
   if (!allowedModels) return true;
   if (typeof allowedModels === "function") return allowedModels(model);
   return allowedModels.includes(model);
+}
+
+async function prepareRealtimePayload(
+  request: Request,
+  maxRequestBytes: number,
+): Promise<{ sdp: string; session?: ChatGPTRealtimeSessionOptions } | Response> {
+  const contentLength = request.headers.get("content-length");
+  if (contentLength && Number(contentLength) > maxRequestBytes) {
+    return json({ error: "realtime_request_too_large", maxRequestBytes }, { status: 413 });
+  }
+  const text = await request.text();
+  if (new TextEncoder().encode(text).byteLength > maxRequestBytes) {
+    return json({ error: "realtime_request_too_large", maxRequestBytes }, { status: 413 });
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!isRecord(parsed) || typeof parsed["sdp"] !== "string" || !parsed["sdp"].trim()) {
+      return json(
+        { error: "invalid_realtime_request", message: "Expected a non-empty `sdp` string." },
+        { status: 400 },
+      );
+    }
+    const rawSession = parsed["session"];
+    if (rawSession !== undefined && !isRecord(rawSession)) {
+      return json(
+        { error: "invalid_realtime_request", message: "`session` must be a JSON object." },
+        { status: 400 },
+      );
+    }
+    const mode = rawSession?.["voiceMode"];
+    if (mode !== undefined && mode !== "wingman" && mode !== "advanced" && mode !== "standard") {
+      return json(
+        {
+          error: "invalid_realtime_request",
+          message: "`session.voiceMode` must be `wingman`, `advanced`, or `standard`.",
+        },
+        { status: 400 },
+      );
+    }
+    const transport = rawSession?.["transport"];
+    if (transport !== undefined && transport !== "wm" && transport !== "vp" && transport !== "vps") {
+      return json(
+        {
+          error: "invalid_realtime_request",
+          message: "`session.transport` must be `wm`, `vp`, or `vps`.",
+        },
+        { status: 400 },
+      );
+    }
+    return {
+      sdp: parsed["sdp"],
+      session: rawSession as ChatGPTRealtimeSessionOptions | undefined,
+    };
+  } catch {
+    return json({ error: "invalid_realtime_request", message: "Expected a JSON object body." }, { status: 400 });
+  }
+}
+
+function mergeRealtimeSessionOptions(
+  defaults?: ChatGPTRealtimeSessionOptions,
+  requested?: ChatGPTRealtimeSessionOptions,
+): ChatGPTRealtimeSessionOptions | undefined {
+  if (!defaults) return requested;
+  if (!requested) return defaults;
+  return {
+    ...defaults,
+    ...requested,
+  };
 }
 
 function originNotAllowed(origin: string): Response {

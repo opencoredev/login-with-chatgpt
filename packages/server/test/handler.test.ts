@@ -73,6 +73,240 @@ describe("createChatGPTHandler", () => {
     expect(await responses.text()).toContain("response.output_text.delta");
   });
 
+  test("exchanges Realtime SDP without exposing ChatGPT tokens", async () => {
+    let clock = 1000;
+    const fetch = createOpenAIMock({ pollsUntilAuthorized: 1 });
+    const handler = createChatGPTHandler({
+      fetch,
+      secret: "test-secret",
+      now: () => clock,
+      realtime: {
+        allowedModes: ["wingman"],
+        getAuth: () => ({ accessToken: "web-access-secret", accountId: "acct_123" }),
+      },
+    });
+    const login = await handler.handler(new Request(`${BASE}/login`, { method: "POST" }));
+    const cookie = cookieFrom(login);
+    clock += 2000;
+    await handler.handler(new Request(`${BASE}/status`, { headers: { cookie } }));
+
+    const realtime = await handler.handler(new Request(`${BASE}/realtime`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        sdp: "v=0\r\no=- browser-offer",
+        session: {
+          voice: "juniper",
+          transport: "wm",
+          voiceMode: "wingman",
+        },
+      }),
+    }));
+    expect(realtime.status).toBe(201);
+    expect(realtime.headers.get("content-type")).toContain("application/sdp");
+    expect(await realtime.text()).toStartWith("v=0");
+
+    const call = fetch.calls.find((entry) => new URL(entry.url).pathname === "/realtime/wm");
+    expect(call).toBeDefined();
+    const headers = new Headers(call?.init?.headers);
+    expect(headers.get("authorization")).toStartWith("Bearer ");
+    const form = call?.init?.body as FormData;
+    expect(JSON.parse(String(form.get("session")))).toMatchObject({
+      voice: "juniper",
+      voice_mode: "wingman",
+      history_and_training_disabled: false,
+      client_tools: [],
+      backend_reasoning_effort: "high",
+      chat_mode: "chat",
+      enable_message_streaming: true,
+    });
+
+    const compatibility = await handler.handler(new Request(`${BASE}/realtime`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        sdp: "v=0\r\no=- browser-offer",
+        session: { transport: "vp", voiceMode: "advanced", model: "explicit-model" },
+      }),
+    }));
+    expect(compatibility.status).toBe(403);
+    expect(await compatibility.json()).toMatchObject({
+      error: "realtime_transport_not_allowed",
+      transport: "vp",
+    });
+  });
+
+  test("refuses to reuse Codex login tokens for the GPT Live /wm transport", async () => {
+    let clock = 1000;
+    const handler = createChatGPTHandler({
+      fetch: createOpenAIMock({ pollsUntilAuthorized: 1 }),
+      secret: "test-secret",
+      now: () => clock,
+    });
+    const login = await handler.handler(new Request(`${BASE}/login`, { method: "POST" }));
+    const cookie = cookieFrom(login);
+    clock += 2000;
+    await handler.handler(new Request(`${BASE}/status`, { headers: { cookie } }));
+
+    const realtime = await handler.handler(new Request(`${BASE}/realtime`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ sdp: "v=0\r\no=- browser-offer" }),
+    }));
+    expect(realtime.status).toBe(501);
+    expect(await realtime.json()).toMatchObject({ error: "realtime_web_auth_required" });
+  });
+
+  test("runs app-server Realtime tools, events, confirmation, and cleanup end to end", async () => {
+    let clock = 1000;
+    let sessionOptions: any;
+    let startOptions: any;
+    let executeContext: any;
+    let confirmationContext: any;
+    let closed = false;
+    const listeners = new Set<(event: any) => void>();
+    const fakeSession = {
+      id: "live_session_123",
+      start: async (options: any) => {
+        startOptions = options;
+        for (const listener of listeners) listener({ type: "session.started" });
+        return "v=0\r\no=- app-server-answer";
+      },
+      onEvent: (listener: (event: any) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      resolveConfirmation: async (callId: string, confirmation: unknown) => {
+        await sessionOptions.confirmTool({
+          callId,
+          name: "create_record",
+          arguments: { title: "Review me" },
+          confirmation,
+          pending: {
+            output: { status: "pending_confirmation" },
+            pendingConfirmation: { review: { title: "Review me" } },
+          },
+        });
+      },
+      close: async () => {
+        closed = true;
+        for (const listener of listeners) listener({ type: "session.closed" });
+      },
+    };
+    const handler = createChatGPTHandler({
+      fetch: createOpenAIMock({ pollsUntilAuthorized: 1 }),
+      secret: "test-secret",
+      now: () => clock,
+      realtime: {
+        appServer: {
+          tools: [{
+            type: "function",
+            name: "create_record",
+            description: "Create a reviewable record.",
+            inputSchema: { type: "object" },
+          }],
+          allowedModels: ["gpt-5.6-luna"],
+          executeTool: async (context) => {
+            executeContext = context;
+            return { output: { status: "completed" } };
+          },
+          confirmTool: async (context) => {
+            confirmationContext = context;
+            return { output: { status: "confirmed" }, speech: "Confirmed." };
+          },
+          sessionFactory: (options) => {
+            sessionOptions = options;
+            return fakeSession as never;
+          },
+        },
+      },
+    });
+    const login = await handler.handler(new Request(`${BASE}/login`, { method: "POST" }));
+    const cookie = cookieFrom(login);
+    clock += 2000;
+    await handler.handler(new Request(`${BASE}/status`, { headers: { cookie } }));
+
+    const started = await handler.handler(new Request(`${BASE}/realtime/app-server`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        sdp: "v=0\r\no=- browser-offer",
+        session: { voice: "vale", model: "gpt-5.6-luna" },
+      }),
+    }));
+    expect(started.status).toBe(201);
+    expect(await started.json()).toEqual({
+      sessionId: "live_session_123",
+      sdp: "v=0\r\no=- app-server-answer",
+    });
+    expect(startOptions).toMatchObject({
+      voice: "vale",
+      model: "gpt-5.6-luna",
+    });
+
+    await sessionOptions.executeTool({
+      callId: "call_1",
+      name: "create_record",
+      arguments: { title: "Review me" },
+    });
+    expect(executeContext).toMatchObject({
+      callId: "call_1",
+      name: "create_record",
+      liveSessionId: "live_session_123",
+    });
+    expect(executeContext.loginSessionId).toBeString();
+    expect(executeContext.request.headers.get("cookie")).toBe(cookie);
+
+    // Events emitted before the browser subscribes must be queued, not lost.
+    for (const listener of listeners) {
+      listener({
+        type: "tool.pending_confirmation",
+        callId: "call_1",
+        name: "create_record",
+        review: { title: "Review me" },
+      });
+    }
+    const events = await handler.handler(
+      new Request(`${BASE}/realtime/app-server/live_session_123/events`, {
+        headers: { cookie },
+      }),
+    );
+    expect(events.status).toBe(200);
+    expect(events.headers.get("content-type")).toContain("application/x-ndjson");
+    const reader = events.body!.getReader();
+    const first = new TextDecoder().decode((await reader.read()).value);
+    expect(first).toContain('"type":"session.started"');
+    const second = new TextDecoder().decode((await reader.read()).value);
+    expect(second).toContain('"type":"tool.pending_confirmation"');
+    await reader.cancel();
+
+    const confirmed = await handler.handler(
+      new Request(`${BASE}/realtime/app-server/live_session_123/confirm`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({
+          callId: "call_1",
+          confirmation: { approved: true },
+        }),
+      }),
+    );
+    expect(confirmed.status).toBe(200);
+    expect(confirmationContext).toMatchObject({
+      callId: "call_1",
+      confirmation: { approved: true },
+      liveSessionId: "live_session_123",
+    });
+
+    const removed = await handler.handler(
+      new Request(`${BASE}/realtime/app-server/live_session_123`, {
+        method: "DELETE",
+        headers: { cookie },
+      }),
+    );
+    expect(removed.status).toBe(200);
+    expect(closed).toBe(true);
+  });
+
   test("enforces responses proxy model allowlist", async () => {
     let clock = 1000;
     const handler = createChatGPTHandler({

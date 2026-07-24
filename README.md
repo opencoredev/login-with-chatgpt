@@ -12,6 +12,9 @@
 - Tokens never touch the browser: HttpOnly cookie only
 - Works with the Vercel AI SDK: `streamText()` straight from the client
 - Generates and edits images with size, quality, format, masks, and streaming previews
+- Experimental GPT Live WebRTC audio with native interruption, plus
+  desktop-style app-server handoffs for arbitrary allowlisted tools and
+  explicit confirmations
 - Open source, MIT licensed
 
 The handler keeps tokens behind the proxy path by default. The browser gets a session cookie, asks your backend which models the account has, and streams from there.
@@ -19,7 +22,7 @@ The handler keeps tokens behind the proxy path by default. The browser gets a se
 ## Install
 
 ```bash
-bun add @opencoredev/loginwithchatgpt-server @opencoredev/loginwithchatgpt-react @opencoredev/loginwithchatgpt-ai
+bun add @opencoredev/loginwithchatgpt-core @opencoredev/loginwithchatgpt-server @opencoredev/loginwithchatgpt-react @opencoredev/loginwithchatgpt-ai
 ```
 
 npm and pnpm work too. Everything ships as ESM with types for Node 18+.
@@ -28,14 +31,18 @@ npm and pnpm work too. Everything ships as ESM with types for Node 18+.
 
 | Package | Does |
 | --- | --- |
-| `@opencoredev/loginwithchatgpt-core` | OAuth, token refresh, model discovery |
-| `@opencoredev/loginwithchatgpt-server` | Backend handler: login, session, logout, models, responses proxy |
+| `@opencoredev/loginwithchatgpt-core` | OAuth, token refresh, model discovery, private voice transport, and the app-server browser client |
+| `@opencoredev/loginwithchatgpt-server` | Backend handler: login, models, responses, direct voice signaling, and native tool handoffs |
 | `@opencoredev/loginwithchatgpt-react` | The `<LoginWithChatGPT />` button and hook |
 | `@opencoredev/loginwithchatgpt-ai` | Vercel AI SDK providers |
 
 ## Docs
 
 Start with the [quickstart](./docs/content/docs/quickstart.mdx). The [security model](./docs/content/docs/concepts/security.mdx) explains how tokens stay on your server, and the [production checklist](./docs/content/docs/guides/production.mdx) is there for when you deploy.
+
+For the experimental subscription-backed speech-to-speech transport, native
+tool handoffs, confirmation lifecycle, and transport limitations, see
+[experimental ChatGPT voice transport](./docs/content/docs/guides/realtime-voice.mdx).
 
 ## Agent skill
 

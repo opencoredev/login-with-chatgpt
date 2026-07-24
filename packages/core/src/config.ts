@@ -4,6 +4,10 @@ import {
   DEFAULT_CODEX_BASE_URL,
   DEFAULT_ISSUER,
   DEFAULT_ORIGINATOR,
+  DEFAULT_REALTIME_BASE_URL,
+  DEFAULT_REALTIME_CLIENT_BUILD,
+  DEFAULT_REALTIME_CLIENT_VERSION,
+  DEFAULT_REALTIME_WEB_CLIENT_ID,
   DEFAULT_SCOPE,
 } from "./constants.ts";
 import type { FetchLike } from "./types.ts";
@@ -21,6 +25,14 @@ export interface ChatGPTConfig {
   scope?: string;
   /** Codex model API base URL. Defaults to `https://chatgpt.com/backend-api/codex`. */
   codexBaseUrl?: string;
+  /** ChatGPT web origin used by the unsupported private voice transport. */
+  realtimeBaseUrl?: string;
+  /** ChatGPT web client identifier sent to the Realtime edge. */
+  realtimeClientVersion?: string;
+  /** ChatGPT web build number sent to the Realtime edge. */
+  realtimeClientBuild?: string;
+  /** Expected client id in access tokens minted from a ChatGPT web session. */
+  realtimeWebClientId?: string;
   /** `originator` value identifying the client. Defaults to `codex_cli_rs`. */
   originator?: string;
   /**
@@ -38,6 +50,10 @@ export interface ResolvedConfig {
   issuer: string;
   scope: string;
   codexBaseUrl: string;
+  realtimeBaseUrl: string;
+  realtimeClientVersion: string;
+  realtimeClientBuild: string;
+  realtimeWebClientId: string;
   originator: string;
   clientVersion: string;
   fetch: FetchLike;
@@ -71,6 +87,10 @@ export function resolveConfig(config: ChatGPTConfig = {}): ResolvedConfig {
     issuer,
     scope: config.scope ?? DEFAULT_SCOPE,
     codexBaseUrl: stripTrailingSlash(config.codexBaseUrl ?? DEFAULT_CODEX_BASE_URL),
+    realtimeBaseUrl: stripTrailingSlash(config.realtimeBaseUrl ?? DEFAULT_REALTIME_BASE_URL),
+    realtimeClientVersion: config.realtimeClientVersion ?? DEFAULT_REALTIME_CLIENT_VERSION,
+    realtimeClientBuild: config.realtimeClientBuild ?? DEFAULT_REALTIME_CLIENT_BUILD,
+    realtimeWebClientId: config.realtimeWebClientId ?? DEFAULT_REALTIME_WEB_CLIENT_ID,
     originator: config.originator ?? DEFAULT_ORIGINATOR,
     clientVersion: config.clientVersion ?? DEFAULT_CLIENT_VERSION,
     fetch: resolveFetch(config.fetch),

@@ -1,0 +1,564 @@
+import type { ResolvedConfig } from "./config.ts";
+import { ChatGPTAuthError } from "./errors.ts";
+
+export type ChatGPTRealtimeTransport = "wm" | "vp" | "vps";
+export type ChatGPTRealtimeVoiceMode = "wingman" | "advanced" | "standard";
+export type ChatGPTRealtimeState =
+  | "connecting"
+  | "idle"
+  | "connected"
+  | "halted"
+  | "listening"
+  | "listening_intently"
+  | "thinking"
+  | "speaking";
+
+export type ChatGPTRealtimeAction =
+  | "start_listening"
+  | "stop_listening"
+  | "stop_speaking"
+  | "resume_listening"
+  | "relay_message";
+
+export interface ChatGPTRealtimeSessionOptions {
+  /** Experimental private ChatGPT transport. `wm` is the GPT Live path. */
+  transport?: ChatGPTRealtimeTransport;
+  voice?: string;
+  voiceMode?: ChatGPTRealtimeVoiceMode;
+  model?: string;
+  advancedModel?: string;
+  language?: string | null;
+  conversationId?: string | null;
+  parentMessageId?: string;
+  timezone?: string;
+  timezoneOffsetMinutes?: number;
+  /**
+   * Reserved for ChatGPT's first-party device tools. `/wm` rejects arbitrary
+   * application function IDs.
+   */
+  clientTools?: readonly never[];
+  conversationMode?: Record<string, unknown>;
+  historyAndTrainingDisabled?: boolean;
+  enableMessageStreaming?: boolean;
+}
+
+/** The multipart `session` object accepted by ChatGPT's web Realtime edge. */
+export interface ChatGPTRealtimeSession {
+  conversation_id: string | null;
+  language_code: string | null;
+  requested_default_model: string;
+  voice: string;
+  voice_session_id: string;
+  voice_status_request_id: string;
+  timezone_offset_min: number;
+  timezone: string;
+  voice_mode: ChatGPTRealtimeVoiceMode;
+  model_slug: string;
+  model_slug_advanced?: string;
+  client_tools: [];
+  history_and_training_disabled: boolean;
+  conversation_mode: Record<string, unknown>;
+  enable_message_streaming?: boolean;
+  [key: string]: unknown;
+}
+
+export interface ChatGPTRealtimeAuth {
+  /** Must be minted for the ChatGPT web client when using `/wm`. */
+  accessToken: string;
+  accountId?: string;
+  /** Stable ChatGPT web device identity used for auth exchange and signaling. */
+  deviceId?: string;
+}
+
+export interface ChatGPTRealtimeWebSessionState {
+  deviceId: string;
+  /** Rotated NextAuth cookie chunks. Encrypt these at rest. */
+  sessionCookies: Record<string, string>;
+}
+
+export interface ExchangeChatGPTRealtimeWebSessionOptions {
+  config: ResolvedConfig;
+  /** Opaque ChatGPT web session credential. Keep server-side and encrypted at rest. */
+  sessionToken: string;
+  /** Reuse the device id returned by the previous exchange. */
+  deviceId?: string;
+  /** Rotated cookie chunks returned by the previous exchange; takes precedence over `sessionToken`. */
+  sessionCookies?: Readonly<Record<string, string>>;
+  /** Persist rotated cookies and device identity in the application's encrypted user store. */
+  onSessionUpdate?: (state: ChatGPTRealtimeWebSessionState) => Promise<void> | void;
+  signal?: AbortSignal;
+}
+
+export interface ChatGPTRealtimeWebAuth extends ChatGPTRealtimeAuth {
+  deviceId: string;
+  sessionCookies: Record<string, string>;
+  email: string;
+  expiresAt?: string;
+}
+
+/**
+ * Mints the short-lived web-client access token required by `/realtime/wm`.
+ * This is a server-only operation; never return `sessionToken` or the result
+ * bearer to browser code.
+ */
+export async function exchangeChatGPTRealtimeWebSession(
+  options: ExchangeChatGPTRealtimeWebSessionOptions,
+): Promise<ChatGPTRealtimeWebAuth> {
+  const sessionCookies = normalizeRealtimeSessionCookies(options.sessionToken, options.sessionCookies);
+  const deviceId = options.deviceId?.trim() || createUuid();
+  const response = await options.config.fetch(`${options.config.realtimeBaseUrl}/api/auth/session`, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+      cookie: [
+        ...Object.entries(sessionCookies).map(([name, value]) => `${name}=${value}`),
+        `oai-did=${deviceId}`,
+      ].join("; "),
+      "oai-device-id": deviceId,
+      origin: options.config.realtimeBaseUrl,
+      referer: `${options.config.realtimeBaseUrl}/`,
+    },
+    signal: options.signal,
+  });
+  const body = await response.json().catch(() => undefined) as Record<string, unknown> | undefined;
+  if (response.status === 403) {
+    throw new ChatGPTAuthError(
+      "realtime_web_edge_rejected",
+      "ChatGPT rejected the GPT Live web session at its edge; retry the request.",
+      { status: 502 },
+    );
+  }
+  const accessToken = typeof body?.["accessToken"] === "string" ? body["accessToken"] : undefined;
+  const account = isRecord(body?.["account"]) ? body["account"] : undefined;
+  const user = isRecord(body?.["user"]) ? body["user"] : undefined;
+  const accountId = typeof account?.["id"] === "string" ? account["id"] : undefined;
+  const email = typeof user?.["email"] === "string" ? user["email"] : undefined;
+  const claims = accessToken ? decodeJwtPayload(accessToken) : undefined;
+  if (!response.ok || !accessToken || !accountId || !email || claims?.["client_id"] !== options.config.realtimeWebClientId) {
+    throw new ChatGPTAuthError(
+      "realtime_web_session_invalid",
+      "ChatGPT web session is missing, expired, or was minted for the wrong client.",
+      { status: response.status || 401 },
+    );
+  }
+  const rotatedCookies = readRotatedRealtimeSessionCookies(response.headers) ?? { ...sessionCookies };
+  const state = { deviceId, sessionCookies: rotatedCookies };
+  await options.onSessionUpdate?.(state);
+  return {
+    accessToken,
+    accountId,
+    deviceId,
+    email,
+    expiresAt: typeof body?.["expires"] === "string" ? body["expires"] : undefined,
+    sessionCookies: rotatedCookies,
+  };
+}
+
+export interface CreateChatGPTRealtimeCallOptions {
+  config: ResolvedConfig;
+  getAuth: () => Promise<ChatGPTRealtimeAuth> | ChatGPTRealtimeAuth;
+  /** Browser-generated WebRTC offer SDP. */
+  sdp: string;
+  session?: ChatGPTRealtimeSessionOptions;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+}
+
+export interface ChatGPTRealtimeEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface ChatGPTRealtimeStateEvent extends ChatGPTRealtimeEvent {
+  type: "state_update";
+  new_state?: ChatGPTRealtimeState;
+  payload?: { new_state?: ChatGPTRealtimeState; [key: string]: unknown };
+}
+
+export interface ChatGPTRealtimeActionEvent extends ChatGPTRealtimeEvent {
+  type: "action_request";
+  payload: { action: ChatGPTRealtimeAction | string; [key: string]: unknown };
+}
+
+export interface ChatGPTRealtimeTranscriptionEvent extends ChatGPTRealtimeEvent {
+  type: "user_transcription_text" | "live_captioning_text";
+  text?: string;
+  transcript?: string;
+}
+
+export interface ChatGPTRealtimeToolInvocation {
+  callId: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ChatGPTRealtimeToolInvokeEvent extends ChatGPTRealtimeEvent {
+  type: "client_tool_invoke";
+  call_id?: string;
+  name?: string;
+  arguments?: unknown;
+  payload?: Record<string, unknown>;
+}
+
+export interface ChatGPTRealtimeToolResultEvent extends ChatGPTRealtimeEvent {
+  type: "client_tool_result";
+  call_id: string;
+  result: Record<string, unknown>;
+}
+
+export interface ChatGPTRealtimeToolUpdateEvent extends ChatGPTRealtimeEvent {
+  type: "client_tool_update";
+  call_id: string;
+  status: string;
+}
+
+/** Known event names observed on ChatGPT's Realtime data channel. */
+export const CHATGPT_REALTIME_EVENT_TYPES = [
+  "state_update", "action_request", "goodbye", "conversation_update",
+  "streaming_message_update", "close_request", "close_ready", "relay_message",
+  "relay_message_processed", "track_state", "full_chat_message",
+  "chat_message_delta", "live_captioning_text", "speaking_update",
+  "user_transcription_text", "client_tool_invoke", "client_tool_result",
+  "client_tool_update",
+] as const;
+
+export const CHATGPT_REALTIME_PATHS: Record<ChatGPTRealtimeTransport, string> = {
+  wm: "/realtime/wm",
+  vp: "/realtime/vp",
+  vps: "/realtime/vps",
+};
+
+/** Builds the deliberately limited private session payload supported by this SDK. */
+export function buildChatGPTRealtimeSession(
+  options: ChatGPTRealtimeSessionOptions = {},
+): ChatGPTRealtimeSession {
+  if (options.voiceMode !== undefined && !["wingman", "advanced", "standard"].includes(options.voiceMode)) {
+    throw new TypeError("`voiceMode` must be `wingman`, `advanced`, or `standard`.");
+  }
+  const transport = options.transport ?? "wm";
+  if (!["wm", "vp", "vps"].includes(transport)) {
+    throw new TypeError("`transport` must be `wm`, `vp`, or `vps`.");
+  }
+  const expectedVoiceMode = transport === "wm" ? "wingman" : transport === "vps" ? "standard" : "advanced";
+  if (options.voiceMode !== undefined && options.voiceMode !== expectedVoiceMode) {
+    throw new TypeError(`\`voiceMode\` must be \`${expectedVoiceMode}\` for the \`${transport}\` transport.`);
+  }
+  if (transport === "wm" && options.historyAndTrainingDisabled === true) {
+    throw new TypeError("`historyAndTrainingDisabled` must be false for ChatGPT `/wm`.");
+  }
+  const voice = options.voice ?? "juniper";
+  // Let the subscription service select its current model unless the caller
+  // explicitly targets a compatibility transport model. Do not pin legacy
+  // product models in SDK defaults.
+  const model = options.model ?? "";
+  if (!voice.trim() || voice.length > 64) throw new TypeError("`voice` must be a non-empty string of at most 64 characters.");
+  if (model.length > 128) throw new TypeError("`model` must be at most 128 characters.");
+  if (transport !== "wm" && !model.trim()) {
+    throw new TypeError("`model` is required for the undocumented `vp` and `vps` compatibility transports.");
+  }
+  if (options.clientTools !== undefined && !Array.isArray(options.clientTools)) {
+    throw new TypeError("`clientTools` must be an array.");
+  }
+  if (options.clientTools?.length) {
+    throw new TypeError(
+      "`clientTools` cannot contain application tools: ChatGPT `/wm` accepts only reserved first-party device tool IDs.",
+    );
+  }
+  if (options.timezoneOffsetMinutes !== undefined &&
+      (!Number.isInteger(options.timezoneOffsetMinutes) || Math.abs(options.timezoneOffsetMinutes) > 24 * 60)) {
+    throw new TypeError("`timezoneOffsetMinutes` must be an integer between -1440 and 1440.");
+  }
+  const id = createUuid();
+  const voiceMode = options.voiceMode ?? expectedVoiceMode;
+  const session: ChatGPTRealtimeSession = {
+    conversation_id: options.conversationId ?? null,
+    language_code: options.language ?? null,
+    requested_default_model: model,
+    voice,
+    voice_session_id: id,
+    voice_status_request_id: id,
+    timezone_offset_min: options.timezoneOffsetMinutes ?? 0,
+    timezone: options.timezone ?? "UTC",
+    voice_mode: voiceMode,
+    model_slug: model,
+    client_tools: [],
+    history_and_training_disabled: options.historyAndTrainingDisabled ?? (transport === "wm" ? false : true),
+    conversation_mode: options.conversationMode ?? { kind: "primary_assistant" },
+  };
+
+  if (transport === "wm") {
+    session.model_slug_advanced = "";
+    session.enable_message_streaming = options.enableMessageStreaming ?? true;
+    session.backend_reasoning_effort = "high";
+    session.chat_mode = "chat";
+  } else if (transport === "vp") {
+    session.model_slug_advanced = options.advancedModel ?? model;
+    session.enable_message_streaming = options.enableMessageStreaming ?? true;
+  } else {
+    session.enable_message_streaming = options.enableMessageStreaming ?? true;
+  }
+  assignDefined(session, "parent_message_id", options.parentMessageId);
+  return session;
+}
+
+/**
+ * Exchanges an SDP offer for an answer through the signed-in user's ChatGPT
+ * subscription. This function belongs on the server; never pass its auth into
+ * browser code.
+ */
+export async function createChatGPTRealtimeCall(
+  options: CreateChatGPTRealtimeCallOptions,
+): Promise<string> {
+  if (!options.sdp.trim()) throw new TypeError("`sdp` must be a non-empty WebRTC offer.");
+  const session = buildChatGPTRealtimeSession(options.session);
+  const transport = options.session?.transport ?? "wm";
+  const path = CHATGPT_REALTIME_PATHS[transport];
+  const auth = await options.getAuth();
+  if (transport !== "wm" && !auth.accountId) {
+    throw new ChatGPTAuthError("realtime_request_failed", "Realtime `/vp` and `/vps` require an account id.", { status: 401 });
+  }
+  const form = new FormData();
+  form.set("sdp", options.sdp);
+  form.set("session", JSON.stringify(session));
+
+  const headers = new Headers(options.headers);
+  headers.set("Authorization", `Bearer ${auth.accessToken}`);
+  if (auth.accountId) headers.set("chatgpt-account-id", auth.accountId);
+  headers.set("Accept", "application/sdp");
+  headers.set("OAI-Language", options.session?.language ?? "en-US");
+  headers.set("OAI-Device-Id", auth.deviceId ?? createUuid());
+  headers.set("OAI-Client-Version", options.config.realtimeClientVersion);
+  headers.set("OAI-Client-Build-Number", options.config.realtimeClientBuild);
+  headers.set("OAI-Session-Id", createUuid());
+  headers.set("X-OpenAI-Target-Path", path);
+  headers.set("X-OpenAI-Target-Route", path);
+  headers.set("Origin", options.config.realtimeBaseUrl);
+  headers.set("Referer", `${options.config.realtimeBaseUrl}/`);
+
+  const requestUrl = `${options.config.realtimeBaseUrl}${path}?dcid=0`;
+  const response = await options.config.fetch(requestUrl, {
+    method: "POST",
+    headers,
+    body: form,
+    signal: options.signal,
+  });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new ChatGPTAuthError(
+      "realtime_request_failed",
+      `Realtime session request failed (${response.status}).`,
+      { status: response.status, body },
+    );
+  }
+  if (!body.trimStart().startsWith("v=0")) {
+    throw new ChatGPTAuthError(
+      "realtime_request_failed",
+      "Realtime endpoint did not return an SDP answer.",
+      { status: response.status, body },
+    );
+  }
+  return body;
+}
+
+export function createChatGPTRealtimeAction(
+  action: ChatGPTRealtimeAction | string,
+  payload: Record<string, unknown> = {},
+): ChatGPTRealtimeActionEvent {
+  return { type: "action_request", payload: { ...payload, action } };
+}
+
+/** Encodes an event using the outer transceiver envelope required by `/wm`. */
+export function encodeChatGPTRealtimeEvent(event: ChatGPTRealtimeEvent): string {
+  return JSON.stringify({ type: "data_message", data: JSON.stringify(event) });
+}
+
+export interface ChatGPTRealtimeMessage {
+  id: string;
+  author: { role: "user" };
+  create_time: number;
+  content: { content_type: "text"; parts: string[] };
+  metadata: Record<string, unknown>;
+}
+
+/** Builds the currently observed private `/wm` event used to inject typed messages. */
+export function createChatGPTRealtimeRelayMessage(
+  text: string,
+  metadata: Record<string, unknown> = {},
+  id = createUuid(),
+): ChatGPTRealtimeEvent {
+  const message: ChatGPTRealtimeMessage = {
+    id,
+    author: { role: "user" },
+    create_time: Date.now() / 1000,
+    content: { content_type: "text", parts: [text] },
+    metadata,
+  };
+  return { type: "relay_message", payload: { type: "relay_message", message } };
+}
+
+/** Parse a completed client-tool invocation without inspecting transcripts. */
+export function parseChatGPTRealtimeToolInvocation(
+  event: unknown,
+): ChatGPTRealtimeToolInvocation | undefined {
+  if (!isRecord(event) || event["type"] !== "client_tool_invoke") return undefined;
+  const payload = isRecord(event["payload"]) ? event["payload"] : event;
+  const tool = isRecord(payload["tool"]) ? payload["tool"] : undefined;
+  const callId = payload["call_id"] ?? payload["callId"] ?? payload["id"];
+  const name = payload["name"] ?? payload["tool_name"] ?? tool?.["name"] ?? tool?.["id"];
+  const args = parseToolArguments(payload["arguments"] ?? payload["args"] ?? payload["input"] ?? {});
+  if (typeof callId !== "string" || !callId || typeof name !== "string" || !name || !args) {
+    return undefined;
+  }
+  return { callId, name, arguments: args };
+}
+
+/** Complete a client-tool call with a structured application result. */
+export function createChatGPTRealtimeToolResult(
+  callId: string,
+  result: Record<string, unknown>,
+): ChatGPTRealtimeToolResultEvent {
+  if (!callId.trim()) throw new TypeError("`callId` must be a non-empty string.");
+  return { type: "client_tool_result", call_id: callId, result };
+}
+
+/** Report non-terminal progress, such as waiting for user approval. */
+export function createChatGPTRealtimeToolUpdate(
+  callId: string,
+  status: string,
+  detail: Record<string, unknown> = {},
+): ChatGPTRealtimeToolUpdateEvent {
+  if (!callId.trim() || !status.trim()) {
+    throw new TypeError("`callId` and `status` must be non-empty strings.");
+  }
+  return { ...detail, type: "client_tool_update", call_id: callId, status };
+}
+
+/**
+ * Decodes both direct events and ChatGPT's nested `{type:"data_message",data}`
+ * envelope. Unknown event types are returned unchanged for forward compatibility.
+ */
+export function parseChatGPTRealtimeEvent(input: unknown): ChatGPTRealtimeEvent | undefined {
+  let value = decodeWireValue(input);
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (typeof value === "string") {
+      try { value = JSON.parse(value); } catch { return undefined; }
+      continue;
+    }
+    if (isRecord(value) && value["type"] === "data_message" && "data" in value) {
+      value = decodeWireValue(value["data"]);
+      continue;
+    }
+    break;
+  }
+  return isRecord(value) && typeof value["type"] === "string"
+    ? value as ChatGPTRealtimeEvent
+    : undefined;
+}
+
+/** Returns the event's nested payload when present, otherwise the event itself. */
+export function getChatGPTRealtimePayload(event: ChatGPTRealtimeEvent): Record<string, unknown> {
+  return isRecord(event["payload"]) ? event["payload"] : event;
+}
+
+function decodeWireValue(value: unknown): unknown {
+  if (value instanceof ArrayBuffer) return new TextDecoder().decode(value);
+  if (ArrayBuffer.isView(value)) {
+    return new TextDecoder().decode(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+  }
+  if (Array.isArray(value) && value.every((item) => Number.isInteger(item))) {
+    return new TextDecoder().decode(Uint8Array.from(value as number[]));
+  }
+  if (isRecord(value)) {
+    const numeric = Object.keys(value);
+    if (numeric.length > 0 && numeric.every((key) => /^\d+$/.test(key))) {
+      return new TextDecoder().decode(Uint8Array.from(
+        numeric.sort((a, b) => Number(a) - Number(b)).map((key) => Number(value[key])),
+      ));
+    }
+  }
+  return value;
+}
+
+function assignDefined(target: Record<string, unknown>, key: string, value: unknown): void {
+  if (value !== undefined) target[key] = value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseToolArguments(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return isRecord(parsed) ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return isRecord(value) ? value : undefined;
+}
+
+const REALTIME_SESSION_COOKIE = "__Secure-next-auth.session-token";
+
+function normalizeRealtimeSessionCookies(
+  sessionToken: string,
+  cookies?: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const values = cookies && Object.keys(cookies).length > 0
+    ? { ...cookies }
+    : { [REALTIME_SESSION_COOKIE]: sessionToken };
+  if (Object.keys(values).length > 8) throw new TypeError("Too many ChatGPT Realtime session cookie chunks.");
+  for (const [name, value] of Object.entries(values)) {
+    const suffix = name.startsWith(`${REALTIME_SESSION_COOKIE}.`)
+      ? name.slice(REALTIME_SESSION_COOKIE.length + 1)
+      : undefined;
+    if (
+      (name !== REALTIME_SESSION_COOKIE && !/^\d+$/.test(suffix ?? ""))
+      || !value
+      || /[;\r\n]/.test(value)
+    ) {
+      throw new TypeError("Invalid ChatGPT Realtime session cookies.");
+    }
+  }
+  return values;
+}
+
+function readRotatedRealtimeSessionCookies(headers: Headers): Record<string, string> | undefined {
+  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  const lines = getSetCookie?.call(headers) ?? [headers.get("set-cookie") ?? ""];
+  const values: Record<string, string> = {};
+  const pattern = /(?:^|,\s*)(__Secure-next-auth\.session-token(?:\.\d+)?)=([^;,]*)/g;
+  for (const line of lines) {
+    for (const match of line.matchAll(pattern)) {
+      if (match[1] && match[2]) values[match[1]] = match[2];
+    }
+  }
+  const chunks = Object.fromEntries(Object.entries(values).filter(([name]) => name !== REALTIME_SESSION_COOKIE));
+  if (Object.keys(chunks).length > 0) return chunks;
+  return values[REALTIME_SESSION_COOKIE] ? { [REALTIME_SESSION_COOKIE]: values[REALTIME_SESSION_COOKIE] } : undefined;
+}
+
+function decodeJwtPayload(token: string): Record<string, unknown> | undefined {
+  const encoded = token.split(".")[1];
+  if (!encoded) return undefined;
+  try {
+    const normalized = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const decoded = typeof atob === "function"
+      ? atob(padded)
+      : Buffer.from(padded, "base64").toString("utf8");
+    return JSON.parse(decoded) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+}
+
+function createUuid(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
