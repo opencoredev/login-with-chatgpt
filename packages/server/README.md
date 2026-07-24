@@ -52,6 +52,34 @@ const models = await auth.getModels(request);
 const proxyFetch = auth.proxyFetch(request);
 ```
 
+For native GPT Live audio plus application tools, use the server-only
+`ChatGPTRealtimeAppServerSession`. It mirrors the desktop app-server handoff
+path without monitoring transcripts:
+
+```ts
+import { ChatGPTRealtimeAppServerSession } from "@opencoredev/loginwithchatgpt-server";
+
+const live = new ChatGPTRealtimeAppServerSession({
+  tokens: await loadEncryptedUserTokens(user.id),
+  refreshTokens: () => refreshEncryptedUserTokens(user.id),
+  tools,
+  executeTool,
+  confirmTool,
+});
+
+const answerSdp = await live.start({
+  sdp: offerSdp,
+  voice: "vale",
+  model: "gpt-5.6-luna",
+});
+```
+
+Keep the instance in a user-scoped backend store and expose only an opaque id,
+SDP answer, safe status events, and an authenticated confirmation endpoint.
+Propagate the selected model to `start()` so delegated turns use the matching
+model entitlement. See the
+[Realtime voice guide](../../docs/content/docs/guides/realtime-voice.mdx).
+
 ## Security defaults
 
 - Tokens are encrypted at rest (AES-GCM) when `secret` is configured, and the
@@ -60,9 +88,10 @@ const proxyFetch = auth.proxyFetch(request);
   raw bearer tokens stay inside the handler.
 - `/realtime` accepts only session options and SDP; it never returns OAuth
   material to the browser.
-- Native `/wm` client tools are descriptions only. Revalidate invocations and
-  execute them against a server-side allowlist under the authenticated
-  application user; require explicit UI approval for consequential mutations.
+- Direct `/wm` accepts only reserved first-party client tools. Arbitrary
+  application tools require the separate server-only app-server bridge.
+  Revalidate every invocation against an allowlist under the authenticated
+  application user and require explicit UI approval for consequential actions.
 - `/realtime` permits only the experimental `wm` transport by default. The
   undocumented `vp` and `vps` compatibility paths require an explicit
   `allowedTransports` opt-in and carry no feature or stability guarantee.

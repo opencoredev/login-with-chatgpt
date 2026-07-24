@@ -25,8 +25,9 @@ credentials never enter the WebRTC/browser response.
   function schemas are rejected. The desktop app's thread-scoped Realtime
   mediation is a separate app-server protocol; its handoff items are not
   emitted to a direct browser `/wm` data channel. Do not turn caption or
-  transcript events into tool calls. Expose a separate authenticated agent
-  mode or use a supported tool-capable Realtime API.
+  transcript events into tool calls. Use the server package's app-server bridge
+  below when you intentionally accept that private desktop protocol, or use a
+  supported tool-capable Realtime API.
 </Callout>
 
 OpenAI currently documents three ChatGPT product options: **Live** (GPT-Live-1
@@ -36,6 +37,86 @@ device, and rollout. The private route names below are observed implementation
 details; they are not a documented contract mapping those product options. See
 OpenAI's current [ChatGPT Voice documentation](https://help.openai.com/en/articles/20001274/)
 for the authoritative product capability and availability matrix.
+
+## Native tools through app-server mediation
+
+`@opencoredev/loginwithchatgpt-server` exports
+`ChatGPTRealtimeAppServerSession` for the desktop-style path. It preserves the
+native WebRTC audio session and interruption behavior while app-server receives
+native handoffs, runs allowlisted application tools, and appends a concise
+spoken result. It does not infer actions from transcripts and does not introduce
+a second model.
+
+Run this class only on your backend. The `codex` executable must be installed
+and available on `PATH` (or supplied with `command`), and ChatGPT tokens must
+come from your encrypted, user-bound server session:
+
+```ts title="realtime-tools.ts"
+import {
+  ChatGPTRealtimeAppServerSession,
+  type RealtimeDynamicTool,
+} from "@opencoredev/loginwithchatgpt-server";
+
+const tools: RealtimeDynamicTool[] = [{
+  type: "function",
+  name: "email_list_threads",
+  description: "List recent email threads for the authenticated app user.",
+  inputSchema: {
+    type: "object",
+    properties: { count: { type: "integer", minimum: 1, maximum: 20 } },
+    required: ["count"],
+    additionalProperties: false,
+  },
+}];
+
+const live = new ChatGPTRealtimeAppServerSession({
+  tokens: await loadServerOnlyChatGPTTokens(appUser.id),
+  refreshTokens: () => refreshServerOnlyChatGPTTokens(appUser.id),
+  tools,
+  executeTool: async ({ callId, name, arguments: args }) => ({
+    output: await executeAllowlistedTool(appUser, callId, name, args),
+  }),
+});
+
+live.onEvent((event) => publishToAuthenticatedStatusStream(appUser.id, event));
+
+const answerSdp = await live.start({
+  sdp: browserOfferSdp,
+  voice: "vale",
+  // Propagate the model selected by this signed-in user.
+  model: "gpt-5.6-luna",
+});
+```
+
+`start()` returns the WebRTC answer SDP. Keep the session object in a
+user-scoped server store, return only an opaque session id plus SDP to the
+browser, and call `close()` when the call ends. Propagating the selected model
+is important: otherwise a delegated turn can inherit a different
+model-specific entitlement.
+
+Tool results are JSON-serializable `output`. For consequential actions, return
+`pendingConfirmation` and render its safe `review` payload in your UI:
+
+```ts
+return {
+  output: { status: "pending_confirmation", draftId },
+  pendingConfirmation: {
+    review: { draftId, to, cc, bcc, subject, body },
+  },
+};
+```
+
+The bridge immediately resolves the app-server request with that pending
+result, keeping native voice responsive. The action remains application-owned
+until an explicit UI action calls `resolveConfirmation(callId, confirmation)`.
+Implement `confirmTool` to re-read the resource, verify the authenticated user,
+and perform the final action. Speech such as “send it” may request this review,
+but must never substitute for application confirmation.
+
+Bridge events are `session.started`, `session.closed`, `handoff`,
+`tool.running`, `tool.completed`, `tool.pending_confirmation`, `tool.failed`,
+and `error`. Never put bearer tokens, raw private tool results, or credentials
+in the browser event stream.
 
 ## Start a call
 
