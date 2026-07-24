@@ -32,6 +32,11 @@ export interface ChatGPTRealtimeSessionOptions {
   parentMessageId?: string;
   timezone?: string;
   timezoneOffsetMinutes?: number;
+  /**
+   * Reserved for ChatGPT's first-party device tools. `/wm` rejects arbitrary
+   * application function IDs; use native handoff requests for product tools.
+   */
+  clientTools?: readonly never[];
   conversationMode?: Record<string, unknown>;
   historyAndTrainingDisabled?: boolean;
   enableMessageStreaming?: boolean;
@@ -50,7 +55,6 @@ export interface ChatGPTRealtimeSession {
   voice_mode: ChatGPTRealtimeVoiceMode;
   model_slug: string;
   model_slug_advanced?: string;
-  /** Required private wire field. Custom values are intentionally unsupported. */
   client_tools: [];
   history_and_training_disabled: boolean;
   conversation_mode: Record<string, unknown>;
@@ -182,13 +186,51 @@ export interface ChatGPTRealtimeTranscriptionEvent extends ChatGPTRealtimeEvent 
   transcript?: string;
 }
 
+export interface ChatGPTRealtimeToolInvocation {
+  callId: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ChatGPTRealtimeTranscriptEntry {
+  role: string;
+  text: string;
+}
+
+export interface ChatGPTRealtimeHandoffRequest {
+  handoffId: string;
+  inputTranscript: string;
+  activeTranscript: ChatGPTRealtimeTranscriptEntry[];
+}
+
+export interface ChatGPTRealtimeToolInvokeEvent extends ChatGPTRealtimeEvent {
+  type: "client_tool_invoke";
+  call_id?: string;
+  name?: string;
+  arguments?: unknown;
+  payload?: Record<string, unknown>;
+}
+
+export interface ChatGPTRealtimeToolResultEvent extends ChatGPTRealtimeEvent {
+  type: "client_tool_result";
+  call_id: string;
+  result: Record<string, unknown>;
+}
+
+export interface ChatGPTRealtimeToolUpdateEvent extends ChatGPTRealtimeEvent {
+  type: "client_tool_update";
+  call_id: string;
+  status: string;
+}
+
 /** Known event names observed on ChatGPT's Realtime data channel. */
 export const CHATGPT_REALTIME_EVENT_TYPES = [
   "state_update", "action_request", "goodbye", "conversation_update",
   "streaming_message_update", "close_request", "close_ready", "relay_message",
   "relay_message_processed", "track_state", "full_chat_message",
   "chat_message_delta", "live_captioning_text", "speaking_update",
-  "user_transcription_text",
+  "user_transcription_text", "client_tool_invoke", "client_tool_result",
+  "client_tool_update", "handoff_request", "thread/realtime/itemAdded",
 ] as const;
 
 export const CHATGPT_REALTIME_PATHS: Record<ChatGPTRealtimeTransport, string> = {
@@ -225,6 +267,14 @@ export function buildChatGPTRealtimeSession(
   if (transport !== "wm" && !model.trim()) {
     throw new TypeError("`model` is required for the undocumented `vp` and `vps` compatibility transports.");
   }
+  if (options.clientTools !== undefined && !Array.isArray(options.clientTools)) {
+    throw new TypeError("`clientTools` must be an array.");
+  }
+  if (options.clientTools?.length) {
+    throw new TypeError(
+      "`clientTools` cannot contain application tools: ChatGPT `/wm` accepts only reserved first-party device tool IDs. Use `onHandoffRequest` for product tools.",
+    );
+  }
   if (options.timezoneOffsetMinutes !== undefined &&
       (!Number.isInteger(options.timezoneOffsetMinutes) || Math.abs(options.timezoneOffsetMinutes) > 24 * 60)) {
     throw new TypeError("`timezoneOffsetMinutes` must be an integer between -1440 and 1440.");
@@ -247,10 +297,18 @@ export function buildChatGPTRealtimeSession(
     conversation_mode: options.conversationMode ?? { kind: "primary_assistant" },
   };
 
-  if (transport === "vp") session.model_slug_advanced = options.advancedModel ?? model;
-  if (transport !== "wm") session.enable_message_streaming = options.enableMessageStreaming ?? true;
+  if (transport === "wm") {
+    session.model_slug_advanced = "";
+    session.enable_message_streaming = options.enableMessageStreaming ?? true;
+    session.backend_reasoning_effort = "high";
+    session.chat_mode = "chat";
+  } else if (transport === "vp") {
+    session.model_slug_advanced = options.advancedModel ?? model;
+    session.enable_message_streaming = options.enableMessageStreaming ?? true;
+  } else {
+    session.enable_message_streaming = options.enableMessageStreaming ?? true;
+  }
   assignDefined(session, "parent_message_id", options.parentMessageId);
-  if (transport === "wm") session.backend_reasoning_effort = "instant";
   return session;
 }
 
@@ -288,7 +346,7 @@ export async function createChatGPTRealtimeCall(
   headers.set("Origin", options.config.realtimeBaseUrl);
   headers.set("Referer", `${options.config.realtimeBaseUrl}/`);
 
-  const requestUrl = `${options.config.realtimeBaseUrl}${path}${transport === "wm" ? "" : "?dcid=0"}`;
+  const requestUrl = `${options.config.realtimeBaseUrl}${path}?dcid=0`;
   const response = await options.config.fetch(requestUrl, {
     method: "POST",
     headers,
@@ -349,6 +407,90 @@ export function createChatGPTRealtimeRelayMessage(
   return { type: "relay_message", payload: { type: "relay_message", message } };
 }
 
+/** Parse a completed native client-tool invocation without inspecting transcripts. */
+export function parseChatGPTRealtimeToolInvocation(
+  event: unknown,
+): ChatGPTRealtimeToolInvocation | undefined {
+  if (!isRecord(event) || event["type"] !== "client_tool_invoke") return undefined;
+  const payload = isRecord(event["payload"]) ? event["payload"] : event;
+  const tool = isRecord(payload["tool"]) ? payload["tool"] : undefined;
+  const callId = payload["call_id"] ?? payload["callId"] ?? payload["id"];
+  const name = payload["name"] ?? payload["tool_name"] ?? tool?.["name"] ?? tool?.["id"];
+  const args = parseToolArguments(payload["arguments"] ?? payload["args"] ?? payload["input"] ?? {});
+  if (typeof callId !== "string" || !callId || typeof name !== "string" || !name || !args) {
+    return undefined;
+  }
+  return { callId, name, arguments: args };
+}
+
+/**
+ * Parses the explicit GPT Live → agent delegation used by the ChatGPT desktop
+ * app. Transcript/caption events never produce a handoff.
+ */
+export function parseChatGPTRealtimeHandoffRequest(
+  event: unknown,
+): ChatGPTRealtimeHandoffRequest | undefined {
+  if (!isRecord(event)) return undefined;
+  const payload = isRecord(event["payload"]) ? event["payload"] : undefined;
+  const params = isRecord(event["params"]) ? event["params"] : undefined;
+  const candidates = [
+    event,
+    isRecord(event["item"]) ? event["item"] : undefined,
+    payload,
+    isRecord(payload?.["item"]) ? payload["item"] : undefined,
+    params,
+    isRecord(params?.["item"]) ? params["item"] : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || candidate["type"] !== "handoff_request") continue;
+    const handoffId = candidate["handoff_id"];
+    const inputTranscript = candidate["input_transcript"];
+    const activeTranscript = candidate["active_transcript"];
+    if (
+      typeof handoffId !== "string" ||
+      !handoffId ||
+      typeof inputTranscript !== "string" ||
+      !inputTranscript.trim() ||
+      !Array.isArray(activeTranscript)
+    ) {
+      return undefined;
+    }
+    const transcript = activeTranscript.flatMap((entry) => {
+      if (!isRecord(entry) || typeof entry["role"] !== "string" || typeof entry["text"] !== "string") {
+        return [];
+      }
+      return [{ role: entry["role"], text: entry["text"] }];
+    });
+    return {
+      handoffId,
+      inputTranscript: inputTranscript.trim(),
+      activeTranscript: transcript,
+    };
+  }
+  return undefined;
+}
+
+/** Complete a native client-tool call with a structured application result. */
+export function createChatGPTRealtimeToolResult(
+  callId: string,
+  result: Record<string, unknown>,
+): ChatGPTRealtimeToolResultEvent {
+  if (!callId.trim()) throw new TypeError("`callId` must be a non-empty string.");
+  return { type: "client_tool_result", call_id: callId, result };
+}
+
+/** Report non-terminal progress, such as waiting for user approval. */
+export function createChatGPTRealtimeToolUpdate(
+  callId: string,
+  status: string,
+  detail: Record<string, unknown> = {},
+): ChatGPTRealtimeToolUpdateEvent {
+  if (!callId.trim() || !status.trim()) {
+    throw new TypeError("`callId` and `status` must be non-empty strings.");
+  }
+  return { ...detail, type: "client_tool_update", call_id: callId, status };
+}
+
 /**
  * Decodes both direct events and ChatGPT's nested `{type:"data_message",data}`
  * envelope. Unknown event types are returned unchanged for forward compatibility.
@@ -401,6 +543,18 @@ function assignDefined(target: Record<string, unknown>, key: string, value: unkn
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseToolArguments(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return isRecord(parsed) ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return isRecord(value) ? value : undefined;
 }
 
 const REALTIME_SESSION_COOKIE = "__Secure-next-auth.session-token";

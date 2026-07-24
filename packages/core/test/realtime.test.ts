@@ -3,11 +3,15 @@ import {
   buildChatGPTRealtimeSession,
   createChatGPTRealtimeAction,
   createChatGPTRealtimeRelayMessage,
+  createChatGPTRealtimeToolResult,
+  createChatGPTRealtimeToolUpdate,
   createChatGPTRealtimeCall,
   encodeChatGPTRealtimeEvent,
   exchangeChatGPTRealtimeWebSession,
   getChatGPTRealtimePayload,
   parseChatGPTRealtimeEvent,
+  parseChatGPTRealtimeHandoffRequest,
+  parseChatGPTRealtimeToolInvocation,
   resolveConfig,
 } from "../src/index.ts";
 import { createMockFetch, makeJwt } from "./helpers.ts";
@@ -26,6 +30,12 @@ describe("ChatGPT Realtime", () => {
     });
     expect(advanced.voice_session_id).toBe(advanced.voice_status_request_id);
     expect(advanced.client_tools).toEqual([]);
+    expect(advanced).toMatchObject({
+      backend_reasoning_effort: "high",
+      chat_mode: "chat",
+      enable_message_streaming: true,
+      model_slug_advanced: "",
+    });
 
     const standard = buildChatGPTRealtimeSession({ transport: "vps", voiceMode: "standard", model: "explicit-compat-model" });
     expect(standard.voice_mode).toBe("standard");
@@ -37,6 +47,13 @@ describe("ChatGPT Realtime", () => {
     expect(() => buildChatGPTRealtimeSession({ transport: "wm", voiceMode: "advanced" })).toThrow("must be `wingman`");
     expect(() => buildChatGPTRealtimeSession({ transport: "bogus" as "wm" })).toThrow("`transport`");
     expect(() => buildChatGPTRealtimeSession({ transport: "vp" })).toThrow("`model` is required");
+    expect(() => buildChatGPTRealtimeSession({
+      clientTools: [{
+        type: "function",
+        name: "tool",
+        parameters: { type: "object" },
+      }] as unknown as never[],
+    })).toThrow("reserved first-party device tool IDs");
   });
 
   test("posts multipart SDP with server-side ChatGPT auth", async () => {
@@ -56,7 +73,7 @@ describe("ChatGPT Realtime", () => {
     expect(answer).toStartWith("v=0");
     expect(fetch.calls).toHaveLength(1);
     const call = fetch.calls[0]!;
-    expect(call.url).toBe("https://chatgpt.com/realtime/wm");
+    expect(call.url).toBe("https://chatgpt.com/realtime/wm?dcid=0");
     const headers = new Headers(call.init?.headers);
     expect(headers.get("authorization")).toBe("Bearer access-secret");
     expect(headers.get("chatgpt-account-id")).toBe("acct_123");
@@ -160,5 +177,68 @@ describe("ChatGPT Realtime", () => {
       type: "relay_message",
       payload: { type: "relay_message", message: { content: { parts: ["hello"] } } },
     });
+  });
+
+  test("parses native tool calls and builds structured lifecycle events", () => {
+    expect(parseChatGPTRealtimeToolInvocation({
+      type: "client_tool_invoke",
+      payload: {
+        call_id: "call-1",
+        name: "draft_email",
+        arguments: "{\"subject\":\"Hello\"}",
+      },
+    })).toEqual({
+      callId: "call-1",
+      name: "draft_email",
+      arguments: { subject: "Hello" },
+    });
+    expect(parseChatGPTRealtimeToolInvocation({
+      type: "client_tool_invoke",
+      payload: { call_id: "call-1", name: "draft_email", arguments: "not-json" },
+    })).toBeUndefined();
+    expect(createChatGPTRealtimeToolUpdate("call-1", "pending_confirmation", {
+      draft_id: "draft-1",
+    })).toEqual({
+      type: "client_tool_update",
+      call_id: "call-1",
+      status: "pending_confirmation",
+      draft_id: "draft-1",
+    });
+    expect(createChatGPTRealtimeToolResult("call-1", {
+      status: "sent",
+      sent: true,
+    })).toEqual({
+      type: "client_tool_result",
+      call_id: "call-1",
+      result: { status: "sent", sent: true },
+    });
+  });
+
+  test("parses native desktop handoffs without treating captions as tools", () => {
+    expect(parseChatGPTRealtimeHandoffRequest({
+      type: "thread/realtime/itemAdded",
+      params: {
+        item: {
+          type: "handoff_request",
+          handoff_id: "handoff-1",
+          input_transcript: "List my recent emails",
+          active_transcript: [
+            { role: "user", text: "Can you help with email?" },
+            { role: "assistant", text: "Yes." },
+          ],
+        },
+      },
+    })).toEqual({
+      handoffId: "handoff-1",
+      inputTranscript: "List my recent emails",
+      activeTranscript: [
+        { role: "user", text: "Can you help with email?" },
+        { role: "assistant", text: "Yes." },
+      ],
+    });
+    expect(parseChatGPTRealtimeHandoffRequest({
+      type: "user_transcription_text",
+      text: "List my recent emails",
+    })).toBeUndefined();
   });
 });

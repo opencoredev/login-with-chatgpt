@@ -19,13 +19,12 @@ credentials never enter the WebRTC/browser response.
   instead.
 </Callout>
 
-<Callout type="warn" title="No application tool calling">
-  GPT Live's private `/wm` session does not accept arbitrary function tools,
-  connected apps, plugins, or application-defined tool results. The public
-  Realtime API supports function tools, but it uses API models and API billing;
-  that support does not carry over to this subscription transport. This SDK
-  does not expose tool registration or pretend transcript monitoring is native
-  tool calling.
+<Callout type="warn" title="Tools use native handoff">
+  `/wm` accepts only ChatGPT's reserved device-tool IDs (`timer`, `stopwatch`,
+  `precise_location`, and `led`) in `client_tools`; arbitrary application
+  function schemas are rejected. Product tools must use the explicit
+  `handoff_request` emitted by GPT Live and execute through an authenticated
+  application agent. Caption and transcript events must not trigger tools.
 </Callout>
 
 OpenAI currently documents three ChatGPT product options: **Live** (GPT-Live-1
@@ -34,8 +33,7 @@ on paid plans), **Advanced** (the previous realtime experience), and **Standard*
 device, and rollout. The private route names below are observed implementation
 details; they are not a documented contract mapping those product options. See
 OpenAI's current [ChatGPT Voice documentation](https://help.openai.com/en/articles/20001274/)
-for the authoritative product capability and availability matrix. OpenAI also
-states that [Voice does not support apps](https://help.openai.com/en/articles/11487775-connectors-in-chatgpt).
+for the authoritative product capability and availability matrix.
 
 ## Start a call
 
@@ -97,6 +95,14 @@ const call = await connectChatGPTRealtime({
   onEvent: (event) => {
     if (event.type === "user_transcription_text") console.log(event);
   },
+  async onHandoffRequest(handoff) {
+    // Run only the explicit delegated request through your authenticated agent.
+    // Do not start tools from onEvent transcript or caption messages.
+    await runAgentForCurrentUser({
+      request: handoff.inputTranscript,
+      activeTranscript: handoff.activeTranscript,
+    });
+  },
 });
 
 // Explicit controls are useful for buttons and push-to-talk.
@@ -140,6 +146,7 @@ The resolved `ChatGPTRealtimeConnection` exposes:
 | `startListening()`, `stopListening()`, `resumeListening()` | Listening controls. |
 | `stopSpeaking()` | Interrupt current model speech. |
 | `relayMessage(text, metadata?)` | Inject a typed user message into GPT Live. |
+| `onHandoffRequest` option | Receives explicit GPT Live → application-agent delegations. |
 | `setInputMuted(boolean)`, `setOutputMuted(boolean)` | Local media controls. |
 | `close()` | Idempotently release all SDK-owned resources. |
 
@@ -169,12 +176,14 @@ core package converts them into the upstream wire keys shown below.
 | `conversationId` | `conversation_id` | `null` for a new conversation |
 | `parentMessageId` | `parent_message_id` | omitted |
 | `timezone`, `timezoneOffsetMinutes` | `timezone`, `timezone_offset_min` | browser timezone; server fallback is UTC / `0` |
-| _(not configurable)_ | `client_tools` | Always `[]`; application tools are unsupported. |
+| `clientTools` | `client_tools` | Must be empty. `/wm` rejects arbitrary application IDs; use `onHandoffRequest`. |
 | `conversationMode` | `conversation_mode` | `{ "kind": "primary_assistant" }` |
 | `historyAndTrainingDisabled` | `history_and_training_disabled` | `false` for `/wm`; OpenAI currently denies `/wm` sessions when true |
-| `enableMessageStreaming` | `enable_message_streaming` | omitted for `/wm`; `true` for compatibility transports |
+| `enableMessageStreaming` | `enable_message_streaming` | `true` by default |
 
-The fixed `/wm` wire payload includes `backend_reasoning_effort: "instant"`.
+The fixed `/wm` wire payload includes `backend_reasoning_effort: "high"`,
+`chat_mode: "chat"`, and an empty `client_tools` array, matching the current
+ChatGPT clients.
 The SDK deliberately does not expose arbitrary private metadata, prompt
 overrides, delegation controls, or model-tool fields as supported features.
 
@@ -262,9 +271,22 @@ Observed event names exported in `CHATGPT_REALTIME_EVENT_TYPES`:
 | State/control | `state_update`, `action_request`, `goodbye`, `close_request`, `close_ready`, `track_state`, `speaking_update` |
 | Conversation/streaming | `conversation_update`, `streaming_message_update`, `full_chat_message`, `chat_message_delta`, `relay_message`, `relay_message_processed` |
 | Speech/text | `user_transcription_text`, `live_captioning_text` |
+| Native delegation | `handoff_request`, `thread/realtime/itemAdded` |
+| Reserved client tools | `client_tool_invoke`, `client_tool_update`, `client_tool_result` |
 
 This catalog is intentionally narrow. The parser passes unknown events through
 for forward compatibility, but their presence is not an SDK capability claim.
+
+`parseChatGPTRealtimeHandoffRequest()` normalizes either a direct
+`handoff_request` or the desktop app's `thread/realtime/itemAdded` envelope.
+The browser helper calls `onHandoffRequest()` only for that item. It never
+turns `user_transcription_text` or `live_captioning_text` into a tool request.
+Your application agent can then use its normal tools, authorization boundaries,
+pending states, and confirmation UI.
+
+The client-tool parsing and result helpers remain available for compatibility
+with ChatGPT's reserved first-party tools, but the SDK does not advertise
+arbitrary schemas in `/wm`.
 
 Control messages use this shape:
 
@@ -299,3 +321,9 @@ rotate its NextAuth session into numbered cookie chunks. Persist the
 `deviceId` and `sessionCookies` delivered to `onSessionUpdate`; serialize
 concurrent exchanges for one user so two requests cannot race that rotation.
 The helper distinguishes a true 401 expiry from a retryable 403 edge rejection.
+
+Treat every client tool invocation as untrusted input. Revalidate it against a
+server-side allowlist, bind execution to the authenticated application user,
+make calls idempotent by call id, and return only structured results. Keep
+drafting separate from sending or other consequential mutations, and require an
+explicit application UI confirmation immediately before the mutation.

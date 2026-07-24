@@ -60,6 +60,9 @@ const proxyFetch = auth.proxyFetch(request);
   raw bearer tokens stay inside the handler.
 - `/realtime` accepts only session options and SDP; it never returns OAuth
   material to the browser.
+- Native `/wm` client tools are descriptions only. Revalidate invocations and
+  execute them against a server-side allowlist under the authenticated
+  application user; require explicit UI approval for consequential mutations.
 - `/realtime` permits only the experimental `wm` transport by default. The
   undocumented `vp` and `vps` compatibility paths require an explicit
   `allowedTransports` opt-in and carry no feature or stability guarantee.

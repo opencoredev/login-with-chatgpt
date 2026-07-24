@@ -2,13 +2,19 @@ import type { FetchLike } from "./types.ts";
 import {
   createChatGPTRealtimeAction,
   createChatGPTRealtimeRelayMessage,
+  createChatGPTRealtimeToolResult,
+  createChatGPTRealtimeToolUpdate,
   encodeChatGPTRealtimeEvent,
   getChatGPTRealtimePayload,
+  parseChatGPTRealtimeHandoffRequest,
   parseChatGPTRealtimeEvent,
+  parseChatGPTRealtimeToolInvocation,
   type ChatGPTRealtimeAction,
   type ChatGPTRealtimeEvent,
+  type ChatGPTRealtimeHandoffRequest,
   type ChatGPTRealtimeSessionOptions,
   type ChatGPTRealtimeState,
+  type ChatGPTRealtimeToolInvocation,
 } from "./realtime.ts";
 
 export interface ChatGPTRealtimeBargeInOptions {
@@ -18,6 +24,11 @@ export interface ChatGPTRealtimeBargeInOptions {
   holdMs?: number;
   /** Minimum interval between interrupts. Defaults to 800ms. */
   cooldownMs?: number;
+}
+
+export interface ChatGPTRealtimeToolControls {
+  complete(result: Record<string, unknown>): void;
+  update(status: string, detail?: Record<string, unknown>): void;
 }
 
 export interface ConnectChatGPTRealtimeOptions {
@@ -38,6 +49,20 @@ export interface ConnectChatGPTRealtimeOptions {
   connectionTimeoutMs?: number;
   signal?: AbortSignal;
   onEvent?: (event: ChatGPTRealtimeEvent) => void;
+  /**
+   * Called only for the native desktop-style delegation item. This is the
+   * supported integration point for application tools; transcript text never
+   * triggers it.
+   */
+  onHandoffRequest?: (handoff: ChatGPTRealtimeHandoffRequest) => void | Promise<void>;
+  /**
+   * Compatibility hook for reserved first-party client tools. `/wm` rejects
+   * arbitrary application tool IDs; prefer `onHandoffRequest`.
+   */
+  onToolInvocation?: (
+    invocation: ChatGPTRealtimeToolInvocation,
+    controls: ChatGPTRealtimeToolControls,
+  ) => void | Promise<void>;
   onStateChange?: (state: ChatGPTRealtimeState) => void;
   onError?: (error: Error) => void;
 }
@@ -56,6 +81,8 @@ export interface ChatGPTRealtimeConnection {
   resumeListening(): void;
   /** Injects a typed user message using the observed private GPT Live protocol. */
   relayMessage(text: string, metadata?: Record<string, unknown>): void;
+  completeTool(callId: string, result: Record<string, unknown>): void;
+  updateTool(callId: string, status: string, detail?: Record<string, unknown>): void;
   setInputMuted(muted: boolean): void;
   setOutputMuted(muted: boolean): void;
   close(): void;
@@ -135,6 +162,19 @@ export async function connectChatGPTRealtime(
         remoteClosing = true;
         setState("halted");
       }
+      const handoff = parseChatGPTRealtimeHandoffRequest(event);
+      if (handoff) {
+        void Promise.resolve(options.onHandoffRequest?.(handoff)).catch(fail);
+      }
+      const invocation = parseChatGPTRealtimeToolInvocation(event);
+      if (invocation) {
+        void Promise.resolve(options.onToolInvocation?.(invocation, {
+          complete: (result) => send(createChatGPTRealtimeToolResult(invocation.callId, result)),
+          update: (status, detail) => send(
+            createChatGPTRealtimeToolUpdate(invocation.callId, status, detail),
+          ),
+        })).catch(fail);
+      }
       options.onEvent?.(event);
     }).catch(fail);
   });
@@ -160,7 +200,7 @@ export async function connectChatGPTRealtime(
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     const response = await fetchImpl(options.endpoint ?? "/api/chatgpt/realtime", {
       method: "POST",
-      credentials: "same-origin",
+      credentials: "include",
       headers: { "content-type": "application/json", accept: "application/sdp" },
       body: JSON.stringify({
         sdp: localSdp,
@@ -212,6 +252,8 @@ export async function connectChatGPTRealtime(
     stopSpeaking: () => action("stop_speaking"),
     resumeListening: () => action("resume_listening"),
     relayMessage: (text, metadata) => send(createChatGPTRealtimeRelayMessage(text, metadata)),
+    completeTool: (callId, result) => send(createChatGPTRealtimeToolResult(callId, result)),
+    updateTool: (callId, status, detail) => send(createChatGPTRealtimeToolUpdate(callId, status, detail)),
     setInputMuted: (muted) => stream.getAudioTracks().forEach((track) => { track.enabled = !muted; }),
     setOutputMuted: (muted) => { outputMuted = muted; audio.muted = muted; },
     close: () => {

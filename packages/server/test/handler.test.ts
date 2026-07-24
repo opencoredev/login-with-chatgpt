@@ -116,6 +116,9 @@ describe("createChatGPTHandler", () => {
       voice_mode: "wingman",
       history_and_training_disabled: false,
       client_tools: [],
+      backend_reasoning_effort: "high",
+      chat_mode: "chat",
+      enable_message_streaming: true,
     });
 
     const compatibility = await handler.handler(new Request(`${BASE}/realtime`, {

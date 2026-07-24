@@ -53,6 +53,14 @@ microphone, plays remote audio, decodes data-channel events, and enables local
 voice-activity barge-in by default. The browser receives only an SDP answer;
 ChatGPT credentials remain in the server handler.
 
+`/wm` reserves `client_tools` for ChatGPT's first-party device integrations and
+rejects arbitrary application IDs. Product tools should use
+`onHandoffRequest`, which fires only for the native `handoff_request` delegation
+used by the ChatGPT desktop app. It never infers actions from captions or
+transcript events. The application remains responsible for authenticating the
+delegated agent, enforcing tool permissions, and confirming consequential
+actions.
+
 GPT Live `/wm` requires a separate ChatGPT web-client credential; the Codex
 device-login token does not authorize it. Keep that session encrypted and
 server-side, mint short-lived auth with `exchangeChatGPTRealtimeWebSession()`,
