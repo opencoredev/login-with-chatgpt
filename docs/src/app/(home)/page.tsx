@@ -1,6 +1,10 @@
 import Image from "next/image";
 import Link from "next/link";
+import { otherOpenCoreSites } from "@/lib/opencore-sites";
 import { gitConfig } from "@/lib/shared";
+
+// Plain followed links on purpose: they share authority between our sites.
+const openCoreSites = otherOpenCoreSites("https://loginwithchatgpt.dev");
 
 const installCode = `bun add @opencoredev/loginwithchatgpt-server \\
   @opencoredev/loginwithchatgpt-react @opencoredev/loginwithchatgpt-ai`;
@@ -297,6 +301,33 @@ export default function HomePage() {
           </div>
         </div>
       </section>
+
+      <footer className="border-t border-fd-border">
+        <nav
+          aria-labelledby="opencore-sites-label"
+          className="mx-auto w-full max-w-6xl px-6 py-10"
+        >
+          <h2
+            id="opencore-sites-label"
+            className="font-mono text-sm text-fd-muted-foreground"
+          >
+            More from OpenCore
+          </h2>
+          <ul className="mt-4 grid gap-x-8 gap-y-2 text-sm leading-6 sm:grid-cols-2 lg:grid-cols-3">
+            {openCoreSites.map((site) => (
+              <li key={site.url}>
+                <a
+                  href={site.url}
+                  className="text-fd-muted-foreground transition-colors hover:text-fd-foreground"
+                >
+                  <span className="text-fd-foreground">{site.name}</span>{" "}
+                  {site.description}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </nav>
+      </footer>
     </main>
   );
 }
