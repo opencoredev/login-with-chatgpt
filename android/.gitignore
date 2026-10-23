@@ -1,0 +1,6 @@
+.gradle/
+build/
+*.tsbuildinfo
+local.properties
+*.log
+.kotlin/
