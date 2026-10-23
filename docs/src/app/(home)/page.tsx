@@ -309,7 +309,7 @@ export default function HomePage() {
         >
           <h2
             id="opencore-sites-label"
-            className="font-mono text-sm text-fd-muted-foreground"
+            className="font-mono text-sm text-neutral-600 dark:text-fd-muted-foreground"
           >
             More from OpenCore
           </h2>
@@ -318,7 +318,7 @@ export default function HomePage() {
               <li key={site.url}>
                 <a
                   href={site.url}
-                  className="text-fd-muted-foreground transition-colors hover:text-fd-foreground"
+                  className="text-neutral-600 transition-colors hover:text-fd-foreground dark:text-fd-muted-foreground"
                 >
                   <span className="text-fd-foreground">{site.name}</span>{" "}
                   {site.description}
